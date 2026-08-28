@@ -709,6 +709,8 @@ class SheetsManager:
         if is_valid_sheet:
             self._add_status_dropdowns(sheet, start_row, len(rows_data))
             self._add_resume_dropdowns(sheet, start_row, len(rows_data))
+            self.ensure_resume_column_validation(sheet)
+            self.ensure_status_column_validation(sheet)
             self._apply_status_colors(sheet, start_row, end_row)
             # Clear column B color+validation on buffer rows after last written row
             try:
@@ -745,6 +747,31 @@ class SheetsManager:
             except Exception as _be:
                 pass
 
+    def ensure_resume_column_validation(self, sheet):
+        """Set the resume dropdown once across the WHOLE column, not per row.
+
+        Per-row validation only covered rows in the current write batch, so
+        every row written by any other path had no dropdown at all and the
+        'Tailored' option looked like it kept disappearing. A column-wide
+        rule survives every run because it is reapplied to the full range.
+        """
+        try:
+            self.spreadsheet.batch_update({"requests": [{
+                "setDataValidation": {
+                    "range": {"sheetId": sheet.id, "startRowIndex": 1,
+                              "startColumnIndex": 9, "endColumnIndex": 10},
+                    "rule": {"condition": {"type": "ONE_OF_LIST",
+                             "values": [{"userEnteredValue": "SDE"},
+                                        {"userEnteredValue": "ML"},
+                                        {"userEnteredValue": "DA"},
+                                        {"userEnteredValue": "Tailored"}]},
+                             "showCustomUi": True, "strict": False},
+                }
+            }]})
+        except Exception as _rve:
+            import logging
+            logging.debug(f"resume column validation failed: {_rve}")
+
     def _add_resume_dropdowns(self, sheet, start_row, num_rows):
         reqs = [{
             "setDataValidation": {
@@ -759,6 +786,30 @@ class SheetsManager:
             for i in range(0, len(reqs), 100):
                 self.spreadsheet.batch_update({"requests": reqs[i:i+100]})
                 import time; time.sleep(1)
+
+    def ensure_status_column_validation(self, sheet):
+        """Set the status dropdown once across the WHOLE column.
+
+        _add_status_dropdowns only covers rows in the current write batch,
+        so rows written on earlier runs kept whatever rule they were born
+        with. Adding 'Tailor' to STATUS_COLORS therefore only reached new
+        rows, and the option looked like it vanished the next day.
+        """
+        try:
+            from aggregator.config import STATUS_COLORS
+            self.spreadsheet.batch_update({"requests": [{
+                "setDataValidation": {
+                    "range": {"sheetId": sheet.id, "startRowIndex": 1,
+                              "startColumnIndex": 1, "endColumnIndex": 2},
+                    "rule": {"condition": {"type": "ONE_OF_LIST",
+                             "values": [{"userEnteredValue": st}
+                                        for st in STATUS_COLORS.keys()]},
+                             "showCustomUi": True, "strict": False},
+                }
+            }]})
+        except Exception as _sve:
+            import logging
+            logging.debug(f"status column validation failed: {_sve}")
 
     def _add_status_dropdowns(self, sheet, start_row, num_rows):
         requests = [
