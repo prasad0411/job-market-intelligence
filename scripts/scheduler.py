@@ -37,7 +37,7 @@ KNOWN_JOB_TYPES = {"times", "interval", "post_write"}
 JOBS = [
     {"name":"aggregator","module":"aggregator","type":"times","times":[(8,0),(15,0),(21,0)],"timeout":5400,"max_gap":8*3600},
     {"name":"send_scheduled","module":"scripts/send_scheduled","type":"times","times":[(9,0),(10,30),(11,30),(12,30)],"timeout":300,"max_gap":24*3600},
-    {"name":"outreach","module":"outreach","type":"times","times":[(0,0)],"timeout":3600,"max_gap":30*3600},
+    {"name":"outreach","module":"outreach","type":"interval","interval_hours":2,"timeout":3600,"max_gap":30*3600},
     {"name":"nightly_digest","module":"scripts/nightly_digest","type":"times","times":[(0,22)],"timeout":120,"max_gap":30*3600},
     {"name":"build_auto_blacklist","module":"scripts/build_auto_blacklist","type":"times","times":[(0,30)],"timeout":120,"max_gap":30*3600},
     {"name":"ats_discovery","module":"scripts/ats_discovery","type":"interval","interval_hours":24,"timeout":600,"max_gap":48*3600},
