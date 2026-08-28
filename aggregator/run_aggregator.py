@@ -3516,6 +3516,22 @@ class UnifiedJobAggregator:
                                 final_url or url, "N/A", "Internship", source, "Security clearance required (JD)")
                             self._print_rejected(company, "Security clearance required (JD)")
                             logging.info(f"REJECTED | {company} | {title} | Clearance in JD")
+                            # LEARN: the JD just proved this company requires clearance.
+                            # Without this write the verdict died here and the same
+                            # company returned every run - including through the
+                            # GitHub path where no JD is ever fetched.
+                            try:
+                                from outreach.brain import Brain as _CB
+                                _cb = _CB.get()
+                                _cl = _cb._data.setdefault("learned_clearance", [])
+                                _cn = company.strip().lower()
+                                if _cn and _cn not in _cl:
+                                    _cl.append(_cn)
+                                    _cb.save()
+                                    logging.info(f"LEARNED clearance company: {_cn}")
+                            except Exception as _lce:
+                                from aggregator.swallowed import swallow as _s
+                                _s('brain.learned_clearance_write', _lce)
                             return None
                 except Exception as _e:
                     logging.error(f"JD clearance check failed for {company}: {_e}")
