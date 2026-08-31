@@ -51,10 +51,12 @@ FILES_TO_BACKUP = [
 ]
 
 
+import os as _os_p, sys as _sys_p
+_sys_p.path.insert(0, _os_p.path.dirname(_os_p.path.dirname(_os_p.path.abspath(__file__))))
+from aggregator.config import STATUS_COLORS as _STATUS_COLORS  # single source of truth
+
 class ManualCleanup:
-    # Local copy deleted: it lacked 'Tailor' and rewrote column B
-    # validation from its own list, erasing the option every run.
-    from aggregator.config import STATUS_COLORS  # noqa: E402
+    STATUS_COLORS = _STATUS_COLORS
     STATUS_VALUES = list(STATUS_COLORS.keys())
 
     # Statuses that are PROTECTED - never moved regardless of age
