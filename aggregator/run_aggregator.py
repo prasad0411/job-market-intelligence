@@ -2987,7 +2987,11 @@ class UnifiedJobAggregator:
         }
         with self._github_lock:
             self.valid_jobs.append(result)
-            self.existing_jobs.add(re.sub(r"[^a-z0-9]", "", f"{_co}_{title}".lower()))
+            # Was a fifth inline key format: it skipped COMPANY_NAME_FIXES
+            # and the Inc/LLC/Corp stripping, so "Bosch Group" was STORED
+            # as boschgroup... and LOOKED UP as bosch..., re-adding the
+            # same job every run. Use the one canonical key.
+            self.existing_jobs.add(_dedup_key(company, title))
             self.source_stats[source]["valid"] += 1
         alert = RoleCategorizer.get_terminal_alert(title)
         print(f"  {company[:25]}: ✓ Trusted fallback {alert}")
