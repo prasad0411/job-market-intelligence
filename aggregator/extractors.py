@@ -89,7 +89,11 @@ def _save_url_health_cache(cache):
         if len(cache) > 2000:
             sorted_items = sorted(cache.items(), key=lambda x: x[1].get("ts", 0))
             cache = dict(sorted_items[-2000:])
-        json.dump(cache, open(_URL_HEALTH_CACHE_FILE, "w"))
+        # open(path,"w") truncates before dump runs: a crash or a second
+        # writer mid-dump left a half-written file. Same bug the comment
+        # at _save_http_response_cache already documents.
+        from aggregator.atomic_json import write_json as _wj
+        _wj(_URL_HEALTH_CACHE_FILE, cache, indent=None)
     except Exception as _sw:
         from aggregator.swallowed import swallow as _s; _s('cache.url_health_write', _sw)
 
@@ -170,7 +174,8 @@ def _load_simplify_method_cache():
 
 def _save_simplify_method_cache():
     try:
-        json.dump(_SIMPLIFY_METHOD_CACHE, open(_SIMPLIFY_METHOD_CACHE_FILE, "w"))
+        from aggregator.atomic_json import write_json as _wj
+        _wj(_SIMPLIFY_METHOD_CACHE_FILE, _SIMPLIFY_METHOD_CACHE, indent=None)
     except Exception as _sw:
         from aggregator.swallowed import swallow as _s; _s('cache.simplify_method_write', _sw)
 
