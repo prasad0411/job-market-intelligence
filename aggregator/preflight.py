@@ -522,15 +522,22 @@ def run_preflight(verbose=True):
             problems.append("[{}] {}".format(name, f))
 
     if verbose:
+        # print() as well as log(): cron logs capture stdout, so a log-only
+        # report never appeared in a single run. check_brain_parses would
+        # have caught the 31 Aug brain wipe the moment it happened; instead
+        # it reported into a void for weeks.
+        def _emit(m, warn=False):
+            (log.warning if warn else log.info)(m)
+            print(m)
         if problems:
-            log.warning("=" * 64)
-            log.warning("PREFLIGHT: %d WIRING PROBLEM(S) FOUND", len(problems))
-            for p in problems:
-                log.warning("  %s", p)
-            log.warning("Pipeline continues, but these need attention.")
-            log.warning("=" * 64)
+            _emit("=" * 64, True)
+            _emit("PREFLIGHT: {} WIRING PROBLEM(S) FOUND".format(len(problems)), True)
+            for _p in problems:
+                _emit("  " + str(_p), True)
+            _emit("Pipeline continues, but these need attention.", True)
+            _emit("=" * 64, True)
         else:
-            log.info("PREFLIGHT: all %d wiring checks passed", len(CHECKS))
+            _emit("PREFLIGHT: all {} wiring checks passed".format(len(CHECKS)))
     return (not problems), problems
 
 
