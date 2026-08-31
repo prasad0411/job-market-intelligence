@@ -507,7 +507,45 @@ CHECKS = [
     ("source list drift",   check_source_lists_cover_all_feeds),
     ("brain integrity",     check_brain_parses),
     ("gates both paths",    check_gates_cover_both_paths),
+    ("dict key conflicts",  lambda: check_conflicting_dict_keys()),
 ]
+
+
+def check_conflicting_dict_keys():
+    """A duplicate dict key with a DIFFERENT value silently wins.
+
+    "telecom" mapped to both "Unknown" and "Teldta" in COMPANY_SLUG_MAPPING.
+    The later one won, so every company slugged "telecom" was labelled with
+    a typo instead of being flagged Unknown. Ruff's F601 flags all 83
+    duplicates including harmless identical repeats, so the real conflict
+    was buried. This reports only the ones that change behaviour.
+    """
+    import ast as _ast
+    problems = []
+    for rel in ("aggregator/config.py", "aggregator/direct_sources.py"):
+        path = os.path.join(BASE, rel)
+        if not os.path.exists(path):
+            continue
+        try:
+            tree = _ast.parse(open(path, encoding="utf-8").read())
+        except Exception as e:
+            problems.append("{} will not parse: {}".format(rel, str(e)[:60]))
+            continue
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Dict):
+                continue
+            seen = {}
+            for k, v in zip(node.keys, node.values):
+                if not isinstance(k, _ast.Constant):
+                    continue
+                seen.setdefault(k.value, []).append(_ast.unparse(v))
+            for key, vals in seen.items():
+                if len(vals) > 1 and len(set(vals)) > 1:
+                    problems.append(
+                        "{} line {}: key {!r} has conflicting values {} "
+                        "- the last one silently wins".format(
+                            rel, node.lineno, key, vals))
+    return problems
 
 
 def run_preflight(verbose=True):
