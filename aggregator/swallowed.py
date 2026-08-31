@@ -52,17 +52,22 @@ def report(verbose=True):
 
     if verbose and out:
         loud = [r for r in out if r[1] >= ALERT_THRESHOLD]
-        log.info("=" * 64)
-        log.info("SWALLOWED EXCEPTIONS: %d site(s), %d total",
-                 len(out), sum(n for _, n, _ in out))
+        # print() as well as log(): the run summary reaches the cron logs via
+        # stdout, so a log-only report was invisible in every run ever
+        # recorded. A silent-failure detector that fails silently is worse
+        # than none, because it looks like proof that nothing is wrong.
+        _emit = lambda m: (log.info(m), print(m))
+        _emit("=" * 64)
+        _emit("SWALLOWED EXCEPTIONS: {} site(s), {} total".format(
+            len(out), sum(n for _, n, _ in out)))
         for site, n, first in out[:15]:
             mark = "  !! " if n >= ALERT_THRESHOLD else "     "
-            log.info("%s%-34s %5d   %s", mark, site, n, first[:70])
+            _emit("{}{:<34} {:5d}   {}".format(mark, site, n, first[:70]))
         if loud:
             log.warning(
                 "%d site(s) swallowed >=%d exceptions - that is a broken "
                 "feature, not an edge case", len(loud), ALERT_THRESHOLD)
-        log.info("=" * 64)
+        _emit("=" * 64)
     return out
 
 
