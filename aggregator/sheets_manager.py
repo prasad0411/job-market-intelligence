@@ -708,7 +708,9 @@ class SheetsManager:
 
         if is_valid_sheet:
             self._add_status_dropdowns(sheet, start_row, len(rows_data))
-            self._add_resume_dropdowns(sheet, start_row, len(rows_data))
+            # Per-row _add_resume_dropdowns removed: the column-wide call
+            # below sets the identical rule in ONE request instead of one
+            # per row, so the per-row version was pure API overhead.
             self.ensure_resume_column_validation(sheet)
             self.ensure_status_column_validation(sheet)
             self._apply_status_colors(sheet, start_row, end_row)

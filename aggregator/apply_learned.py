@@ -87,7 +87,20 @@ def is_learned_clearance(company: str) -> bool:
     """
     if not company:
         return False
-    return company.strip().lower() in set(_brain().get("learned_clearance", []))
+    c = company.strip().lower()
+    cl = set(_brain().get("learned_clearance", []))
+    if c in cl:
+        return True
+    # Prefix match both ways, same rule is_user_blacklisted already uses.
+    # Exact matching meant a learned "north atlantic industries" did not
+    # block "North Atlantic Industries, Inc." as the feeds spell it, so the
+    # company came back every run despite having been learned.
+    for b in cl:
+        if len(b) < 4 or len(c) < 4:
+            continue
+        if c.startswith(b) or b.startswith(c):
+            return True
+    return False
 
 
 def is_user_blacklisted(company: str) -> bool:
