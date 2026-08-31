@@ -22,6 +22,16 @@ def _sheets_retry(func):
                     raise
         return func(*args, **kwargs)
     return wrapper
+def _retry_call(fn, *a, **kw):
+    """Run a gspread call under _sheets_retry.
+
+    _sheets_retry was defined and then never applied to a single method: a
+    dead safety net. The 29 Aug run died on an unretried values_update 429
+    mid-write. Wrapping the raw call is safer than decorating 38 methods.
+    """
+    return _sheets_retry(fn)(*a, **kw)
+
+
 import time
 import re
 from functools import lru_cache
@@ -570,7 +580,8 @@ class SheetsManager:
         ]
 
         end_row = start_row + len(rows) - 1
-        self.discarded_entries.update(
+        _retry_call(
+            self.discarded_entries.update,
             values=rows,
             range_name=f"A{start_row}:M{end_row}",
             value_input_option="USER_ENTERED",
@@ -651,7 +662,8 @@ class SheetsManager:
 
         end_row = start_row + len(rows_data) - 1
         try:
-            sheet.update(
+            _retry_call(
+                sheet.update,
                 values=rows_data,
                 range_name=f"A{start_row}:N{end_row}",
                 value_input_option="USER_ENTERED",
