@@ -787,7 +787,10 @@ class UnifiedJobAggregator:
         try:
             db_path = os.path.join(".local", "run_history.db")
             os.makedirs(".local", exist_ok=True)
-            con = sqlite3.connect(db_path)
+            # timeout: wait for a busy DB instead of raising immediately.
+            # WAL: readers (nightly_digest) no longer block this writer.
+            con = sqlite3.connect(db_path, timeout=30)
+            con.execute("PRAGMA journal_mode=WAL")
             cur = con.cursor()
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS runs (

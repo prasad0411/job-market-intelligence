@@ -62,7 +62,7 @@ def _latest_run_stats():
     if not os.path.exists(db):
         return {}
     try:
-        con = sqlite3.connect(db)
+        con = sqlite3.connect(db, timeout=30)
         row = con.execute(
             "SELECT ts,valid,discarded,failed_http,elapsed_seconds FROM runs ORDER BY ts DESC LIMIT 1"
         ).fetchone()
