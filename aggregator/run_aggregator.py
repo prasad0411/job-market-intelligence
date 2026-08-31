@@ -3486,7 +3486,7 @@ class UnifiedJobAggregator:
                 "netflix", "uber", "lyft", "stripe", "airbnb", "spotify", "pinterest",
                 "tesla", "nvidia", "tiktok", "bytedance", "salesforce", "slack",
                 "snap", "reddit", "dropbox", "coinbase", "robinhood", "doordash",
-                "instacart", "databricks", "snowflake", "palantir", "figma",
+                "instacart", "databricks", "snowflake", "figma",  # palantir removed: user blacklist
                 "rivian", "rivian and volkswagen", "lucid", "lucid motors",
                 "centerfield", "waymo", "cruise", "nuro", "zoox", "aurora",
                 "openai", "anthropic", "cerebras", "groq", "ramp", "brex",
