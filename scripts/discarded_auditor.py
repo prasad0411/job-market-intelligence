@@ -88,9 +88,23 @@ class BrainConnector:
         return {}
 
     def _save(self):
+        """Write through Brain's locked, atomic, merging writer.
+
+        This used to dump a whole in-memory copy with open(..., "w"): no
+        lock, no temp file, no merge. _load() returns {} on any error, so a
+        single bad read wrote an EMPTY brain over everything. It also held
+        that copy for the length of a full audit, so any key another process
+        wrote meanwhile was silently reverted. Matches the 27 Aug corruption
+        and the 31 Aug wipe that cost 722 companies and the blacklist.
+        """
         try:
-            with open(BRAIN_FILE, "w") as f:
-                json.dump(self.brain, f, indent=2)
+            import sys as _s, os as _o
+            _s.path.insert(0, _o.path.dirname(_o.path.dirname(_o.path.abspath(__file__))))
+            from outreach.brain import Brain
+            b = Brain.get()
+            for _k, _v in (self.brain or {}).items():
+                b._data[_k] = _v
+            b.save()
         except Exception:
             pass
 

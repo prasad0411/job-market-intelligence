@@ -93,14 +93,19 @@ def _load_url_cache():
 
 
 def _save_url_cache(cache):
-    """Save URL-company cache to brain.json."""
+    """Save URL-company cache through Brain's locked, atomic writer.
+
+    This used to open brain.json with "w" directly: no lock, no temp file.
+    That truncates the file in place, so any concurrent reader saw a partial
+    file and any concurrent writer produced interleaved JSON. It is what
+    produced brain.json.corrupt_20260827 (one trailing brace too many) and
+    the 31 Aug wipe that cost 722 companies and the whole blacklist.
+    """
     try:
-        brain = {}
-        if os.path.exists(_BRAIN_PATH):
-            brain = json.load(open(_BRAIN_PATH))
-        brain["url_company_cache"] = cache
-        with open(_BRAIN_PATH, "w") as f:
-            json.dump(brain, f, indent=2)
+        from outreach.brain import Brain
+        b = Brain.get()
+        b._data["url_company_cache"] = cache
+        b.save()
     except Exception:
         pass
 
