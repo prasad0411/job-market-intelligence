@@ -117,11 +117,19 @@ class Brain:
                     d[k] = v
             return d
         except Exception as e:
-            log.debug(f"Brain load failed: {e}")
+            # A transient read failure used to return _default() - an empty
+            # brain - and the next save() wrote that over the real file,
+            # destroying every learned key. Twice in five days. Mark the
+            # load as failed so save() refuses to overwrite good data.
+            log.error(f"Brain load FAILED, refusing to overwrite: {e}")
+            self._load_failed = True
             return self._default()
 
     def save(self):
         """Atomic write with exclusive lock. Also prunes stale data on save."""
+        if getattr(self, "_load_failed", False):
+            log.error("Brain save aborted: load had failed, data is not trustworthy")
+            return
         try:
             self._prune_stale()
             # Preserve top-level keys written by OTHER processes (e.g.
