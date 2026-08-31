@@ -2065,7 +2065,9 @@ COMPANY_SLUG_MAPPING = {
     "us-erac": "Enterprise",
     "hpiq": "HP",
     "stream": "Workstream",
-    "telecom": "Teldta",
+    # "telecom": "Teldta" removed: a typo that appeared nowhere else and,
+    # being the later duplicate, silently overrode the deliberate
+    # "telecom": "Unknown" set twice above and listed as a garbage name.
     "atp": "ATPCO",
     "dematic corp. (ild-us)": "Dematic",
     "clearesult consulting": "CLEAResult",
