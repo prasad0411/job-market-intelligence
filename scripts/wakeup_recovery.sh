@@ -5,9 +5,19 @@ LOG="$BASE/.local/wakeup.log"
 SCRIPTS="$BASE/scripts/cron_runner.sh"
 LOCKFILE="$BASE/.local/wakeup.lock"
 
-# Use flock for atomic locking — automatically released on exit/crash
-exec 9>"$LOCKFILE"
-flock -n 9 || exit 0  # Exit silently if already running
+# flock ships with util-linux and is NOT present on stock macOS, so the
+# previous `flock -n 9` silently did nothing and this script could run
+# alongside itself. mkdir is atomic on every POSIX filesystem.
+LOCKDIR="${LOCKFILE}.d"
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    _pid=$(cat "$LOCKDIR/pid" 2>/dev/null)
+    if [[ -n "$_pid" ]] && kill -0 "$_pid" 2>/dev/null; then exit 0; fi
+    _age=$(( $(date +%s) - $(stat -f %m "$LOCKDIR" 2>/dev/null || echo 0) ))
+    if (( _age < 300 )); then exit 0; fi
+    rm -rf "$LOCKDIR"; mkdir "$LOCKDIR" 2>/dev/null || exit 0
+fi
+echo $$ > "$LOCKDIR/pid"
+trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
 
 source "$BASE/venv/bin/activate" 2>/dev/null || true
 

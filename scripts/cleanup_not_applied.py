@@ -1066,15 +1066,24 @@ def rotate_logs():
                 print(f"  [rotate] watchdog_alerts.log trimmed to 150 lines")
         except Exception: pass
 
-    # skipped_jobs.log: cap at 1000 lines
+    # skipped_jobs.log: cap by SIZE first, then lines.
+    # This file receives every REJECTED and DUPLICATE line, roughly 85,000 per
+    # run. readlines() on a 74 MB file loads it entirely into memory before the
+    # length check, so the guard that was meant to prevent the problem became
+    # expensive because of it. Check st_size first and stream the tail.
     sjl = _os.path.join(LOCAL, "skipped_jobs.log")
     if _os.path.exists(sjl):
         try:
-            lines = open(sjl).readlines()
-            if len(lines) > 1000:
-                open(sjl, "w").writelines(lines[-700:])
-                print(f"  [rotate] skipped_jobs.log trimmed to 700 lines")
-        except Exception: pass
+            size_mb = _os.path.getsize(sjl) / (1024 * 1024)
+            if size_mb > 5:
+                import collections as _c
+                with open(sjl, encoding="utf-8", errors="replace") as _f:
+                    tail = _c.deque(_f, maxlen=5000)
+                with open(sjl, "w", encoding="utf-8") as _f:
+                    _f.writelines(tail)
+                print(f"  [rotate] skipped_jobs.log {size_mb:.1f}MB -> tail 5000 lines")
+        except Exception as _re:
+            print(f"  [rotate] skipped_jobs.log FAILED: {_re}")
 
     # wakeup.log: cap at 300 lines
     wl = _os.path.join(LOCAL, "wakeup.log")

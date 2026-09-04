@@ -138,9 +138,30 @@ class PipelineBrain:
         return self._get("companies", company.lower().strip(), default={})
     
     def is_clearance_company(self, company):
-        """Check if brain has learned this company needs clearance."""
-        info = self.get_company_info(company)
-        return info.get("needs_clearance", False)
+        """
+        Check whether this company requires clearance.
+
+        This used to read company_info[co]["needs_clearance"] while
+        apply_learned.is_learned_clearance read the flat learned_clearance
+        list. One held 34 entries, the other 0, and neither consulted the
+        other, so the answer depended on which path happened to run. Both now
+        read the same list, with the per company flag kept as a secondary
+        signal so nothing already recorded is lost.
+        """
+        c = (company or "").strip().lower()
+        if not c:
+            return False
+        if self.get_company_info(company).get("needs_clearance", False):
+            return True
+        try:
+            from aggregator.apply_learned import is_learned_clearance
+            return bool(is_learned_clearance(company))
+        except Exception:
+            learned = self._get("learned_clearance", default=[]) or []
+            if c in learned:
+                return True
+            return any(len(b) >= 4 and (c.startswith(b) or b.startswith(c))
+                       for b in learned)
     
     def learn_clearance(self, company, needs_clearance):
         """Learn whether a company needs clearance."""

@@ -508,6 +508,8 @@ CHECKS = [
     ("brain integrity",     check_brain_parses),
     ("gates both paths",    check_gates_cover_both_paths),
     ("dict key conflicts",  lambda: check_conflicting_dict_keys()),
+    ("uncalled functions",  lambda: check_uncalled_functions()),
+    ("trapped top calls",   lambda: check_trapped_toplevel_calls()),
 ]
 
 
@@ -545,6 +547,109 @@ def check_conflicting_dict_keys():
                         "{} line {}: key {!r} has conflicting values {} "
                         "- the last one silently wins".format(
                             rel, node.lineno, key, vals))
+    return problems
+
+
+def check_uncalled_functions():
+    """
+    Functions defined in a wired module but never called anywhere.
+
+    Six mechanisms in this repo were built correctly and never reached:
+    _sheets_retry applied to zero methods, the clearance writer never called
+    from the aggregator, two reports logged where nothing read them, flock on
+    a platform without flock, and rotate_logs trapped in a conditional. The
+    orphaned-module check finds whole dead files; this finds dead functions
+    inside live ones.
+
+    Table registered callables (preflight CHECKS, scheduler JOBS) are resolved
+    by name at runtime, so they are excluded.
+    """
+    import ast as _ast
+    problems = []
+    roots = ("aggregator", "outreach", "scripts", "analytics")
+    defs, calls, refs = {}, set(), set()
+
+    for root in roots:
+        d = os.path.join(BASE, root)
+        if not os.path.isdir(d):
+            continue
+        for dirpath, _, files in os.walk(d):
+            if "__pycache__" in dirpath or "deleted_" in dirpath:
+                continue
+            for fn in files:
+                if not fn.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, fn)
+                try:
+                    tree = _ast.parse(open(path, encoding="utf-8").read())
+                except Exception:
+                    continue
+                rel = os.path.relpath(path, BASE)
+                for node in _ast.walk(tree):
+                    if isinstance(node, _ast.FunctionDef):
+                        defs.setdefault(node.name, rel)
+                    elif isinstance(node, _ast.Call):
+                        f = node.func
+                        if isinstance(f, _ast.Name):
+                            calls.add(f.id)
+                        elif isinstance(f, _ast.Attribute):
+                            calls.add(f.attr)
+                    elif isinstance(node, _ast.Name):
+                        refs.add(node.id)
+                    elif isinstance(node, _ast.Attribute):
+                        refs.add(node.attr)
+
+    for name, where in sorted(defs.items()):
+        if name.startswith("_") or name.startswith("test_"):
+            continue
+        if name in ("main", "wrapper", "objective", "forward", "setup_logging"):
+            continue
+        if name in calls or name in refs:
+            continue
+        problems.append("{}: {}() defined but never called or referenced"
+                        .format(where, name))
+    return problems
+
+
+def check_trapped_toplevel_calls():
+    """
+    Module level calls nested inside a conditional that reads like setup.
+
+    rotate_logs() sat one indent level too deep, inside an
+    `if os.path.exists(...)` block, so it executed only when an unrelated
+    file happened to be present. skipped_jobs.log reached 74 MB as a result,
+    despite a rule capping it at 1000 lines.
+    """
+    import ast as _ast
+    problems = []
+    watch = ("rotate_logs", "run_preflight", "report", "setup_directories",
+             "cleanup_previous_artifacts", "main")
+
+    for rel in ("scripts/cleanup_not_applied.py", "scripts/scheduler.py",
+                "aggregator/run_aggregator.py", "scripts/quality_gate.py"):
+        path = os.path.join(BASE, rel)
+        if not os.path.exists(path):
+            continue
+        try:
+            tree = _ast.parse(open(path, encoding="utf-8").read())
+        except Exception:
+            continue
+        for node in tree.body:
+            if not isinstance(node, (_ast.If, _ast.Try, _ast.For, _ast.While)):
+                continue
+            # skip the standard __main__ guard
+            if (isinstance(node, _ast.If) and isinstance(node.test, _ast.Compare)
+                    and isinstance(node.test.left, _ast.Name)
+                    and node.test.left.id == "__name__"):
+                continue
+            for inner in _ast.walk(node):
+                if (isinstance(inner, _ast.Call)
+                        and isinstance(inner.func, _ast.Name)
+                        and inner.func.id in watch):
+                    problems.append(
+                        "{} line {}: {}() is nested inside a conditional, so it "
+                        "runs only when that branch is taken".format(
+                            rel, inner.lineno, inner.func.id))
     return problems
 
 

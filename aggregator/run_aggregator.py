@@ -760,6 +760,21 @@ class UnifiedJobAggregator:
             _sw_report(verbose=True)
         except Exception:
             pass
+        # PipelineBrain.on_pipeline_complete feeds log_source_quality, which
+        # records valid vs rejected per source. Never called until now, so
+        # there was no data to answer which of the 29 sources produces the
+        # unfetchable rows that became 98% Google fallback URLs.
+        if _BRAIN:
+            try:
+                _BRAIN.on_pipeline_complete(dict(self.source_stats))
+                worst = _BRAIN.get_worst_sources()
+                if worst:
+                    print("\n  WORST SOURCES BY DATA QUALITY")
+                    for _s_name, _score in list(worst)[:5]:
+                        print(f"    {_s_name:28s} {_score}")
+            except Exception as _pce:
+                from aggregator.swallowed import swallow as _s2
+                _s2("brain.on_pipeline_complete", _pce)
 
         self._print_summary()
         elapsed = time.time() - start_time
@@ -4059,11 +4074,37 @@ class UnifiedJobAggregator:
             except Exception:
                 pass
 
-    def _print_rejected(self, company, reason):
+    def _print_rejected(self, company, reason, title="", source=""):
+        """
+        Every rejection funnels through here: 46 call sites. title and source
+        are optional so existing callers are unaffected, but when supplied the
+        rejection also teaches PipelineBrain.
+
+        PipelineBrain.on_job_rejected was implemented and never called, which
+        is why us_cities and intl_cities held 0 entries after 47 days of runs.
+        Roughly 1,500 rejections per run carried information the brain already
+        knew how to absorb and never received.
+        """
         display = (company or "Unknown")
         logging.info(f"REJECTED | {display} | {reason}")
         if not getattr(self, "_github_mode", False):
             print(f"    {display}: ✗ {reason}")
+        if _BRAIN and company:
+            try:
+                _BRAIN.on_job_rejected(company, title or "", reason,
+                                       source or "unknown")
+                # Location intelligence: a rejection naming a country or a
+                # non US location is evidence for intl_cities, which the
+                # brain can then use to reject earlier and cheaper.
+                rl = reason.lower()
+                if "location" in rl or "international" in rl or "non-us" in rl:
+                    import re as _re
+                    m = _re.search(r"[:\-]\s*([A-Za-z .'-]{3,40})\s*$", reason)
+                    if m:
+                        _BRAIN.learn_international_city(m.group(1).strip())
+            except Exception as _be:
+                from aggregator.swallowed import swallow as _s
+                _s("brain.on_job_rejected", _be)
 
     def _ensure_mutual_exclusion(self):
         if not self.valid_jobs or not self.discarded_jobs:
