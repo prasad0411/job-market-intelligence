@@ -95,14 +95,20 @@ from aggregator.utils import (
     ExtractionVoter,
 )
 
-logging.basicConfig(
-    filename=os.path.join(".local", "skipped_jobs.log"),
-    filemode="a",
-    level=logging.INFO,
-    force=True,
-    format="%(asctime)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# filename= sends EVERY log line to that file and nowhere else. The cron logs
+# capture stdout, so DUPLICATE, REJECTED and GATE REJECT lines were invisible
+# there: 28 log files contained zero occurrences of "DUPLICATE (company+title)"
+# while skipped_jobs.log had them all along. Diagnosing the duplicate row bug
+# took five rounds of guessing because of it. Handlers, not filename, so the
+# detail reaches both the file and stdout.
+_fmt = logging.Formatter("%(asctime)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+_fh = logging.FileHandler(os.path.join(".local", "skipped_jobs.log"), mode="a")
+_fh.setFormatter(_fmt)
+import sys as _sys_log
+_sh = logging.StreamHandler(_sys_log.stdout)
+_sh.setFormatter(_fmt)
+_sh.setLevel(logging.INFO)
+logging.basicConfig(level=logging.INFO, force=True, handlers=[_fh, _sh])
 
 # Log header written via logging
 logging.info("=" * 80)
@@ -4237,9 +4243,12 @@ class UnifiedJobAggregator:
         # That single wrong label caused two wrong outcomes: the Job Type
         # column said Full Time, and the summer filter skipped the row,
         # because rule 1 never filters full-time roles.
-        if any(kw in tl for kw in ["co-op", "co op", "coop"]):
+        # Word boundaries, not substrings. "intern" in "intermediate" and
+        # "internal" is True, which labelled "Intermediate Systems
+        # Administrator" and "Internal Tools Engineer" as Internship.
+        if re.search(r"\bco[-\s]?ops?\b", tl):
             return "Co-op"
-        if any(kw in tl for kw in ["intern", "internship"]):
+        if re.search(r"\bintern(ship)?s?\b", tl):
             return "Internship"
 
         # New grad sources - only once the title has offered no signal
@@ -4267,7 +4276,13 @@ class UnifiedJobAggregator:
         # signal matched above, this is a full-time posting.
         if "_direct" in sl or "direct_ats" in sl:
             return "Full Time"
-        return "Internship"
+        # Blind "Internship" fallback labelled full time roles as internships:
+        # "AI and Data Science Engineer II" and "Technical Support Specialist"
+        # both came back Internship with no intern signal anywhere. Only fall
+        # back to Internship when the SOURCE is an internship feed.
+        if "intern" in sl or "offseason" in sl or "coop" in sl or "co_op" in sl:
+            return "Internship"
+        return "Full Time"
 
     @staticmethod
     def _format_date():

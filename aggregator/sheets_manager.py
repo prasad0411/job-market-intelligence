@@ -517,6 +517,41 @@ class SheetsManager:
         if not jobs:
             return 0
 
+        # ------------------------------------------------------------------
+        # PRE-WRITE SHEET REFRESH
+        # The batch dedup above only compares jobs against each other. The
+        # aggregator's existing_jobs snapshot is taken at startup and the
+        # write happens up to three hours later, so a row another run added
+        # in between is invisible and gets written twice. That produced 50
+        # duplicate rows across 46 company+title pairs.
+        #
+        # Re-read the sheet here, immediately before writing, using the
+        # canonical _dedup_key so read and write keys are identical. This
+        # holds even if two runs overlap, so it does not depend on the lock.
+        # ------------------------------------------------------------------
+        try:
+            from aggregator.run_aggregator import _dedup_key as _dk
+            _live = set()
+            for _r in _retry_call(self.valid_sheet.get_all_values)[1:]:
+                if len(_r) > 3 and _r[2].strip() and _r[3].strip():
+                    _live.add(_dk(_r[2].strip(), _r[3].strip()))
+            _before = len(jobs)
+            jobs = [j for j in jobs
+                    if _dk(j.get("company", ""), j.get("title", "")) not in _live]
+            _dropped = _before - len(jobs)
+            if _dropped:
+                import logging as _l2
+                msg = (f"Pre-write refresh dropped {_dropped} rows already in "
+                       f"the sheet (concurrent run or stale snapshot)")
+                _l2.warning(msg); print(f"  {msg}")
+            if not jobs:
+                print("  All rows already present, nothing to write")
+                return 0
+        except Exception as _pwe:
+            import logging as _l3
+            _l3.error(f"Pre-write refresh FAILED, duplicates possible: {_pwe}")
+            print(f"  WARNING pre-write refresh failed: {_pwe}")
+
         self.ensure_sufficient_rows(self.valid_sheet)
 
         from aggregator.utils import DataSanitizer

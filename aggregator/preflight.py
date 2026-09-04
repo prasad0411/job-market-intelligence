@@ -565,8 +565,9 @@ def run_preflight(verbose=True):
         # have caught the 31 Aug brain wipe the moment it happened; instead
         # it reported into a void for weeks.
         def _emit(m, warn=False):
+            # log only: run_aggregator's stdout handler already forwards this
+            # to the cron logs, and print() on top printed every line twice.
             (log.warning if warn else log.info)(m)
-            print(m)
         if problems:
             _emit("=" * 64, True)
             _emit("PREFLIGHT: {} WIRING PROBLEM(S) FOUND".format(len(problems)), True)

@@ -30,7 +30,7 @@ done
 
 # Jobs: "module|health_file|max_gap_sec"
 JOBS=(
-    "aggregator|health_aggregator|7200"
+    "aggregator|health_aggregator|28800"
     "scripts/send_scheduled|health_send_scheduled|86400"
     "scripts/process_bounces|health_process_bounces|3600"
     "scripts/nightly_digest|health_nightly_digest|108000"

@@ -100,7 +100,32 @@ def is_learned_clearance(company: str) -> bool:
             continue
         if c.startswith(b) or b.startswith(c):
             return True
+    # Acronyms cannot prefix match their expansion: the feed sends "LLNL"
+    # while the learned entry is "lawrence livermore national laboratory",
+    # and neither string starts with the other. Same gap shape as North
+    # Atlantic Industries, different mechanism.
+    for short, full in _CLEARANCE_ALIASES.items():
+        if c == short or c.startswith(short + " "):
+            if any(full == x or x.startswith(full) for x in cl):
+                return True
     return False
+
+
+_CLEARANCE_ALIASES = {
+    "llnl": "lawrence livermore national laboratory",
+    "lanl": "los alamos national laboratory",
+    "snl": "sandia national laboratories",
+    "jhuapl": "johns hopkins applied physics laboratory",
+    "apl": "johns hopkins applied physics laboratory",
+    "ll": "mit lincoln laboratory",
+    "mitll": "mit lincoln laboratory",
+    "gdms": "general dynamics mission systems",
+    "gdit": "general dynamics",
+    "ida": "institute for defense analyses",
+    "bah": "booz allen hamilton",
+    "ngc": "northrop grumman",
+    "lmco": "lockheed martin",
+}
 
 
 def is_user_blacklisted(company: str) -> bool:
