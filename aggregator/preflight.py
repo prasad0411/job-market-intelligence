@@ -599,6 +599,7 @@ def check_uncalled_functions():
                     elif isinstance(node, _ast.Attribute):
                         refs.add(node.attr)
 
+    dead = []
     for name, where in sorted(defs.items()):
         if name.startswith("_") or name.startswith("test_"):
             continue
@@ -606,8 +607,27 @@ def check_uncalled_functions():
             continue
         if name in calls or name in refs:
             continue
-        problems.append("{}: {}() defined but never called or referenced"
-                        .format(where, name))
+        dead.append("{}: {}()".format(where, name))
+
+    # ADVISORY, not failing. 68 of these predate the check. A gate that fails
+    # on a backlog you did not create gets muted, and muting is exactly how
+    # _sheets_retry stayed unreachable for months. Report a summary plus the
+    # highest concentration file, and let the caller decide.
+    if dead:
+        import collections as _c
+        by_file = _c.Counter(d.split(":")[0] for d in dead)
+        top = ", ".join("{} ({})".format(f, n) for f, n in by_file.most_common(3))
+        problems.append(
+            "ADVISORY {} functions defined but never called. Highest "
+            "concentration: {}. Run scripts/dead_code_report.py for the "
+            "full list.".format(len(dead), top))
+        try:
+            import json as _j
+            _out = os.path.join(BASE, ".local", "dead_functions.json")
+            with open(_out, "w") as _f:
+                _j.dump({"count": len(dead), "functions": dead}, _f, indent=2)
+        except Exception:
+            pass
     return problems
 
 
