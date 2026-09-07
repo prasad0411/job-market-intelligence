@@ -549,11 +549,25 @@ class ManualCleanup:
         )
 
     def _repopulate_main_sheet(self, all_data, remaining_rows):
-        if len(all_data) > 1:
-            self.sheet.delete_rows(2, len(all_data))
-            time.sleep(2)
+        """
+        Overwrite in place, then trim. NEVER delete first.
 
+        This used to call delete_rows(2, len(all_data)) and then write the
+        survivors back. Between those two API calls the sheet held zero rows.
+        On 2026-09-07 a BrokenPipeError landed in exactly that window and the
+        sheet stayed empty: 1,506 rows including 797 Applied and 572 Rejected.
+        The 20% abort guard above protects against bad filtering logic, but
+        nothing protected against a crash midway through.
+
+        Writing the survivors over the existing range first means the sheet
+        always holds a superset of the correct data. If the trim never happens
+        you get harmless trailing duplicates, not an empty sheet.
+        """
         if not remaining_rows:
+            # Nothing survives. Refuse rather than clear the sheet, because a
+            # filter that matches everything is far more likely to be a bug
+            # than a legitimate outcome.
+            print("  REFUSING to clear: zero remaining rows. Investigate the filter.")
             return
 
         renumbered_rows = []
@@ -562,11 +576,26 @@ class ManualCleanup:
             new_row = [idx] + padded_row[1:16]
             renumbered_rows.append(new_row)
 
+        # 1. write survivors over the top of the existing rows
         range_name = f"A2:P{1 + len(renumbered_rows)}"
         self.sheet.update(
             values=renumbered_rows, range_name=range_name, value_input_option="RAW"
         )
         time.sleep(2)
+
+        # 2. verify the write landed before removing anything
+        check = self.sheet.get_all_values()
+        if len(check) - 1 < len(renumbered_rows):
+            print(f"  ABORT trim: wrote {len(renumbered_rows)} but sheet shows "
+                  f"{len(check)-1}. Leaving stale rows rather than risking loss.")
+            return
+
+        # 3. only now remove the leftover tail
+        stale_start = len(renumbered_rows) + 2
+        stale_end = len(all_data)
+        if stale_end >= stale_start:
+            self.sheet.delete_rows(stale_start, stale_end)
+            time.sleep(2)
 
         self.sheet.format(
             range_name,
