@@ -439,6 +439,56 @@ def _is_senior_title(title):
     return bool(_SENIOR_TITLE_RE.search(title))
 
 
+_CO_TLDS = r"\.(com|co|io|ai|tech|inc|net|org|dev|xyz|jobs)\b"
+_CO_STOP = {"and", "the", "group", "technologies", "technology", "inc", "llc",
+            "corp", "corporation", "co", "labs", "systems", "solutions",
+            "holdings", "international", "global", "usa"}
+
+
+def _co_squash(s):
+    """Company name to comparable form: drop TLD, punctuation and case."""
+    import re as _r
+    return _r.sub(r"[^a-z0-9]", "", _r.sub(_CO_TLDS, "", (s or "").lower()))
+
+
+def _co_tokens(s):
+    """Meaningful word tokens, stopwords removed."""
+    import re as _r
+    return [t for t in _r.findall(r"[a-z]+", _r.sub(_CO_TLDS, "", (s or "").lower()))
+            if t not in _CO_STOP]
+
+
+def _same_company(url_company, hint_company):
+    """
+    True when a URL derived company and a feed supplied company are the same
+    employer written differently.
+
+    The previous check squashed both and demanded equality, so siftstack vs
+    Sift, arch.co vs Arch and rivianvw.tech vs Rivian and Volkswagen Group
+    Technologies all counted as conflicts. Each false conflict spawned a hint
+    row with url=URL_SHIFTED, which renders as a Google search: no apply link,
+    no JD fetch, no clearance scan. 119 of 127 rows ended up that way.
+
+    Three tiers, cheapest first. Genuine conflicts such as stripe vs Anthropic
+    and boards vs Figma still return False.
+    """
+    a, b = _co_squash(url_company), _co_squash(hint_company)
+    if not a or not b:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    ht = _co_tokens(hint_company)
+    if not ht:
+        return False
+    # every hint token has its stem present in the domain: rivianvw <- rivian + vw
+    if all(t[:3] in a for t in ht):
+        return True
+    # any substantial hint token appears whole in the domain
+    if any(len(t) > 3 and t in a for t in ht):
+        return True
+    return False
+
+
 def _dedup_key(company, title):
     """THE dedup key. One definition, used by every site that builds one.
 
@@ -1373,9 +1423,16 @@ class UnifiedJobAggregator:
         # If mismatch detected, the URL company is different from the hint company
         # The hint data (original company/title) is a REAL job — queue it separately
         if source not in _GITHUB_SOURCES and _true_original_company.lower().strip() != company_from_github.lower().strip():
-            _hint_norm = re.sub(r"[^a-z0-9]", "", _true_original_company.lower())
-            _url_norm = re.sub(r"[^a-z0-9]", "", company_from_github.lower())
-            if (_hint_norm != _url_norm and len(_true_original_company) > 1
+            # _same_company replaces an exact match on squashed names, which
+            # treated siftstack vs Sift and rivianvw.tech vs Rivian and
+            # Volkswagen Group Technologies as different employers and split
+            # each into a URL-less hint row.
+            _names_agree = _same_company(company_from_github, _true_original_company)
+            if _names_agree:
+                logging.info(
+                    f"Name variant, not a conflict: url='{company_from_github}' "
+                    f"hint='{_true_original_company}' — keeping single row with real URL")
+            if (not _names_agree and len(_true_original_company) > 1
                     and _true_original_company not in ("Unknown", "unknown", "N/A", "")):
                 # Save the original hint as a separate entry (URL unknown due to shift)
                 _hint_job = {
@@ -1793,10 +1850,11 @@ class UnifiedJobAggregator:
                             _url_domain_co = _url_dom
                         except Exception:
                             pass
-                        _src_matches_url = _url_domain_co and (
-                            _url_domain_co in re.sub(r"[^a-z0-9]", "", _true_original_company.lower())
-                            or re.sub(r"[^a-z0-9]", "", _true_original_company.lower()) in _url_domain_co
-                        )
+                        # Same matcher as the hint branch above. Two sites
+                        # deciding "is this the same company" with different
+                        # rules is how the dedup key reached seven formats.
+                        _src_matches_url = bool(_url_domain_co) and _same_company(
+                            _url_domain_co, _true_original_company)
                         # If source company matches URL, give it the real URL
                         # and swap the result's URL to search link
                         if _src_matches_url and result:
