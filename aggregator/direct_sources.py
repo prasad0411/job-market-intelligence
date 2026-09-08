@@ -75,7 +75,7 @@ GREENHOUSE_COMPANIES = {
     "scopely": "Scopely", "kabam": "Kabam",
     "movableink": "Movable Ink", "contentful": "Contentful",
     "sanity": "Sanity", "prisma": "Prisma",
-    "truveta": "Truveta", "tempus": "Tempus",
+    "truveta": "Truveta",
     "veracyte": "Veracyte", "guardanthealth": "Guardant Health",
     "nuvei": "Nuvei", "billcom": "Bill.com",
     "tipalti": "Tipalti", "paylocity": "Paylocity",

@@ -1615,7 +1615,6 @@ _SEED = {
     "uber.com": "{first}.{last}",
     "airbnb.com": "{first}.{last}",
     "figma.com": "{first}.{last}",
-    "snowflake.com": "{first}.{last}",
     "servicenow.com": "{first}.{last}",
     "intuit.com": "{first}.{last}",
     "oracle.com": "{first}.{last}",
