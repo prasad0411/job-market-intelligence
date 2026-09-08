@@ -248,12 +248,35 @@ class PipelineBrain:
     # ═══════════════════════════════════════════════════════════════
     
     def log_source_quality(self, source, valid_count, rejected_count, error_count):
-        """Track quality metrics per source."""
+        """
+        Accumulate quality metrics per source across runs.
+
+        This used to _set() the whole entry every run, so quality_ratio was a
+        single run snapshot rather than a lifetime rate. On 2026-09-08 a
+        shadowed _dedup_key crashed every job in the 08:00 run, that run wrote
+        0 valid for every source, and the stored history was gone. A metric
+        that a single bad run can erase cannot detect decay, because there is
+        nothing to compare against.
+
+        Totals now accumulate. recent_ratio is this run, lifetime_ratio is all
+        runs, and decay is the gap between them.
+        """
+        prev = (self._get("source_quality", default={}) or {}).get(source, {})
+        tv = prev.get("total_valid", 0) + valid_count
+        tr = prev.get("total_rejected", 0) + rejected_count
+        te = prev.get("total_errors", 0) + error_count
+        runs = prev.get("runs", 0) + 1
         self._set("source_quality", source, value={
             "valid": valid_count,
             "rejected": rejected_count,
             "errors": error_count,
-            "quality_ratio": valid_count / max(1, valid_count + rejected_count),
+            "total_valid": tv,
+            "total_rejected": tr,
+            "total_errors": te,
+            "runs": runs,
+            "recent_ratio": valid_count / max(1, valid_count + rejected_count),
+            "lifetime_ratio": tv / max(1, tv + tr),
+            "quality_ratio": tv / max(1, tv + tr),
             "last_run": datetime.now().isoformat(),
         })
     
