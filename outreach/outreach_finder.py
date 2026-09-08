@@ -769,11 +769,11 @@ class Finder:
                         b.save()
                 except Exception:
                     pass
-                key = company.strip()
-                if key in overrides:
-                    return overrides[key]
+                _company = company.strip()
+                if _company in overrides:
+                    return overrides[_company]
                 for k, v in overrides.items():
-                    if k.lower() == key.lower():
+                    if k.lower() == _company.lower():
                         return v
         except Exception as _e:
             log.debug(f"finder op failed: {_e}")

@@ -2759,11 +2759,6 @@ class ValidationHelper:
                     age_days = DateParser.extract_days_ago(matched_text)
 
                     if age_days is not None:
-                        try:
-                            from aggregator.config import MAX_REASONABLE_AGE_DAYS
-                        except (ImportError, AttributeError):
-                            MAX_REASONABLE_AGE_DAYS = 365
-
                         if age_days > MAX_REASONABLE_AGE_DAYS:
                             logging.warning(
                                 f"Page age {age_days} exceeds reasonable ({MAX_REASONABLE_AGE_DAYS}) - ignoring"

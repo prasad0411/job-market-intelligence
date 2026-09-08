@@ -307,6 +307,97 @@ def check_orphaned_modules():
 
 
 # ── CHECK 11 ──────────────────────────────────────────────────────────
+def _find_shadowed(rel, src):
+    """Return problem strings for locals that shadow module-level callables."""
+    import ast as _ast
+    problems = []
+    try:
+        tree = _ast.parse(src)
+    except SyntaxError as e:
+        return ["{} does not parse: {}".format(rel, e)]
+
+    # module-level callables: def/async def, and names pulled in by from-import
+    callables = set()
+    for node in tree.body:
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            callables.add(node.name)
+        elif isinstance(node, _ast.ImportFrom):
+            for a in node.names:
+                if a.name != "*":
+                    callables.add(a.asname or a.name)
+    if not callables:
+        return problems
+
+    def _targets(node):
+        """Names bound directly in this function body, excluding params.
+
+        ast.walk() descends into nested defs, so their bodies are collected
+        and subtracted; a rebind inside a nested function is reported against
+        that inner scope, not twice.
+        """
+        inner = set()
+        for n in _ast.walk(node):
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.Lambda)) and n is not node:
+                for sub in _ast.walk(n):
+                    inner.add(id(sub))
+        bound = {}
+        for n in _ast.walk(node):
+            if id(n) in inner:
+                continue
+            tl = []
+            if isinstance(n, _ast.Assign):
+                tl = n.targets
+            elif isinstance(n, (_ast.AugAssign, _ast.AnnAssign)):
+                tl = [n.target]
+            elif isinstance(n, (_ast.For, _ast.AsyncFor)):
+                tl = [n.target]
+            elif isinstance(n, _ast.withitem):
+                tl = [n.optional_vars] if n.optional_vars else []
+            elif isinstance(n, _ast.NamedExpr):
+                tl = [n.target]
+            for t in tl:
+                for sub in _ast.walk(t):
+                    if isinstance(sub, _ast.Name) and isinstance(sub.ctx, _ast.Store):
+                        bound.setdefault(sub.id, sub.lineno)
+        return bound
+
+    for fn in _ast.walk(tree):
+        if not isinstance(fn, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        declared = set()
+        for n in _ast.walk(fn):
+            if isinstance(n, (_ast.Global, _ast.Nonlocal)):
+                declared.update(n.names)
+        for name, lineno in sorted(_targets(fn).items()):
+            if name in declared or name not in callables or name == fn.name:
+                continue
+            problems.append(
+                "{}:{} {}() rebinds {} as a local - the module-level "
+                "callable is shadowed for the rest of this scope".format(
+                    rel, lineno, fn.name, name))
+    return problems
+
+
+def check_shadowed_functions():
+    """A local variable silently shadows a module-level function.
+
+    _dedup_key was reassigned to a string at line 3241 of processors.py, so
+    every call in the comprehensive path raised
+    TypeError: 'str' object is not callable. 279 failures per run; 1,018
+    fresh jobs collapsed to 5 valid. ruff cannot see this: F811 only fires
+    on same-scope redefinition, and F811 is in ruff.toml's ignore list.
+    check_shadowed_constants uses a module-level uppercase regex and cannot
+    see a lowercase rebind inside a function body.
+    """
+    problems = []
+    for p in _iter_py():
+        rel = os.path.relpath(p, BASE)
+        if rel.startswith("tests"):
+            continue
+        problems.extend(_find_shadowed(rel, _read(p) or ""))
+    return problems
+
+
 def check_shadowed_constants():
     """A local copy of a config constant silently shadows the real one.
 
@@ -503,6 +594,7 @@ CHECKS = [
     ("shell functions",     check_shell_functions),
     ("orphaned modules",    check_orphaned_modules),
     ("shadowed constants",  check_shadowed_constants),
+    ("shadowed functions",  check_shadowed_functions),
     ("duplicate defs",      check_duplicate_definitions),
     ("source list drift",   check_source_lists_cover_all_feeds),
     ("brain integrity",     check_brain_parses),
@@ -582,7 +674,9 @@ def check_uncalled_functions():
                 path = os.path.join(dirpath, fn)
                 try:
                     tree = _ast.parse(open(path, encoding="utf-8").read())
-                except Exception:
+                except Exception as _e:
+                    problems.append("{} unparsed, not checked: {}".format(
+                        os.path.relpath(path, BASE), str(_e)[:60]))
                     continue
                 rel = os.path.relpath(path, BASE)
                 for node in _ast.walk(tree):
@@ -619,15 +713,15 @@ def check_uncalled_functions():
         top = ", ".join("{} ({})".format(f, n) for f, n in by_file.most_common(3))
         problems.append(
             "ADVISORY {} functions defined but never called. Highest "
-            "concentration: {}. Run scripts/dead_code_report.py for the "
-            "full list.".format(len(dead), top))
+            "concentration: {}. Full list in "
+            ".local/dead_functions.json".format(len(dead), top))
         try:
             import json as _j
             _out = os.path.join(BASE, ".local", "dead_functions.json")
             with open(_out, "w") as _f:
                 _j.dump({"count": len(dead), "functions": dead}, _f, indent=2)
-        except Exception:
-            pass
+        except Exception as _e:
+            log.warning("dead_code report not written: %s", str(_e)[:80])
     return problems
 
 
@@ -652,7 +746,9 @@ def check_trapped_toplevel_calls():
             continue
         try:
             tree = _ast.parse(open(path, encoding="utf-8").read())
-        except Exception:
+        except Exception as _e:
+            problems.append("{} unparsed, not checked: {}".format(
+                rel if "rel" in dir() else path, str(_e)[:60]))
             continue
         for node in tree.body:
             if not isinstance(node, (_ast.If, _ast.Try, _ast.For, _ast.While)):
