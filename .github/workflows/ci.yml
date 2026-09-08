@@ -19,8 +19,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pytest beautifulsoup4 requests dnspython gspread oauth2client msal pyyaml google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          pip install pytest beautifulsoup4 requests dnspython gspread oauth2client msal pyyaml \
+            google-api-python-client google-auth-httplib2 google-auth-oauthlib \
+            numpy pandas scikit-learn
+
+      - name: Seed minimal state
+        run: |
+          mkdir -p .local
+          python -c "import json, pathlib; p = pathlib.Path('.local/brain.json'); p.exists() or p.write_text(json.dumps({'domains':{},'companies':{},'patterns':{'global_success_rates':{},'total_attempts':0,'total_successes':0},'apis':{},'mx_cache':{},'job_id_registry':{},'discovered_ats':{},'known_ats_slugs':{},'learned_clearance':[],'learned_non_tech':[],'learned_slugs':{},'learned_company_names':{},'user_blacklist_companies':[],'user_blacklist_titles':[],'url_company_cache':{},'issue_log':[],'run_history':{},'simplify_retry_queue':{},'source_quality':{}}, indent=2))"
 
       - name: Run tests
         run: pytest tests/ -v --tb=short
-# 237 tests · Python 3.12 · pytest
