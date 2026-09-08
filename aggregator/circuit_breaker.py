@@ -118,11 +118,5 @@ class CircuitBreakerRegistry:
             cls._breakers[name] = CircuitBreaker(name=name, **kwargs)
         return cls._breakers[name]
 
-    @classmethod
-    def all_stats(cls) -> list:
-        return [cb.stats for cb in cls._breakers.values()]
 
-    @classmethod
-    def any_open(cls) -> bool:
-        return any(cb.is_open for cb in cls._breakers.values())
 

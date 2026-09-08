@@ -355,19 +355,6 @@ class SheetsManager:
             )
         return existing
 
-    def load_urls_only(self):
-        urls = set()
-        for sheet in [
-            self.valid_sheet,
-            self.discarded_entries,
-            self.reviewed___not_applied,
-        ]:
-            for row in sheet.get_all_values()[1:]:
-                if len(row) > 5:
-                    url = row[5].strip()
-                    if url and "http" in url:
-                        urls.add(self._clean_url(url))
-        return urls
 
     def load_company_titles_only(self):
         company_titles = set()

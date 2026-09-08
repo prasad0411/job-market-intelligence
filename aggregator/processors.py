@@ -3576,31 +3576,6 @@ class ValidationHelper:
 
         return None, None
 
-    @staticmethod
-    def validate_company_field(company, title, url):
-        """ORIGINAL"""
-        if not company or company == "Unknown" or not company.strip():
-            return True, ValidationHelper.extract_company_from_domain(url), None
-
-        company = company.strip()
-
-        if not CompanyValidator.is_valid(company):
-            return True, ValidationHelper.extract_company_from_domain(url), None
-
-        if len(company) > 100:
-            return False, company, "Company name too long"
-
-        if (
-            sum(
-                1
-                for kw in ["intern", "software", "engineer", "developer"]
-                if kw in company.lower()
-            )
-            >= 2
-        ):
-            return False, company, "Company field contains job title"
-
-        return True, company, None
 
     @staticmethod
     def clean_legal_entity(company):

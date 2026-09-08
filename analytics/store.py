@@ -187,20 +187,6 @@ class AnalyticsStore:
         """, (cutoff, cutoff)).fetchall()
         return [dict(r) for r in rows]
 
-    def company_stats(self, min_seen: int = 2) -> List[Dict]:
-        """Companies seen multiple times with outcome breakdown."""
-        rows = self.conn.execute("""
-            SELECT company,
-                   COUNT(*) as total_seen,
-                   SUM(CASE WHEN outcome = 'valid' THEN 1 ELSE 0 END) as valid,
-                   SUM(CASE WHEN outcome = 'discarded' THEN 1 ELSE 0 END) as discarded
-            FROM jobs
-            GROUP BY company
-            HAVING total_seen >= ?
-            ORDER BY valid DESC
-            LIMIT 50
-        """, (min_seen,)).fetchall()
-        return [dict(r) for r in rows]
 
     def location_distribution(self) -> List[Dict]:
         """Valid jobs by state."""
@@ -261,42 +247,6 @@ class AnalyticsStore:
             "count": n,
         }
 
-    def feature_vector(self, company: str, title: str, source: str, location: str) -> Dict:
-        """
-        Generate ML feature vector for a job posting.
-        Used for future response prediction model.
-        """
-        # Company history features
-        co_row = self.conn.execute("""
-            SELECT COUNT(*) as seen, 
-                   SUM(CASE WHEN outcome='valid' THEN 1 ELSE 0 END) as valid_hist
-            FROM jobs WHERE company = ?
-        """, (company,)).fetchone()
-
-        # Source reliability
-        src_row = self.conn.execute("""
-            SELECT COUNT(*) as total,
-                   SUM(CASE WHEN outcome='valid' THEN 1 ELSE 0 END) as valid
-            FROM jobs WHERE source = ?
-        """, (source,)).fetchone()
-
-        # Location density
-        state = self._extract_state(location)
-        loc_row = self.conn.execute("""
-            SELECT COUNT(*) as count FROM jobs
-            WHERE location_state = ? AND outcome = 'valid'
-        """, (state,)).fetchone()
-
-        return {
-            "company_times_seen": co_row["seen"] if co_row else 0,
-            "company_valid_rate": (co_row["valid_hist"] / co_row["seen"]) if co_row and co_row["seen"] > 0 else 0,
-            "source_valid_rate": (src_row["valid"] / src_row["total"]) if src_row and src_row["total"] > 0 else 0,
-            "location_state": state,
-            "location_job_density": loc_row["count"] if loc_row else 0,
-            "title_length": len(title),
-            "has_ai_ml": 1 if any(kw in title.lower() for kw in ["ai", "ml", "machine learning", "data science"]) else 0,
-            "has_sde": 1 if any(kw in title.lower() for kw in ["software", "sde", "backend", "frontend", "full stack"]) else 0,
-        }
 
     # ── Helpers ────────────────────────────────────────────────────────────
 

@@ -389,10 +389,6 @@ class Brain:
         e["mx_checked_at"] = time.time()
         self.save()
 
-    def mx_provider_for(self, domain: str) -> str:
-        """Return known MX provider for domain, or empty string."""
-        entry = self._data["mx_cache"].get(domain.lower(), {})
-        return entry.get("provider", "")
 
     # ── Company API ──────────────────────────────────────────────────────────
 
@@ -645,10 +641,6 @@ class Brain:
         cb["sent_today"] = cb.get("sent_today", 0) + 1
         self.save()
 
-    def cb_record_bounce(self):
-        cb = self._data["circuit_breaker"]
-        cb["bounced_today"] = cb.get("bounced_today", 0) + 1
-        self.save()
 
     def cb_should_pre_warn(self) -> bool:
         """True if bounce rate > 15% and we haven't warned in last 6h."""

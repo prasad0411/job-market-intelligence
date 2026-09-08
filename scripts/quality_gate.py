@@ -150,6 +150,7 @@ class QualityGate:
         start = max(1, len(data) - check_last_n)
         rows_to_delete = set()
 
+        _applied_taught = 0
         for i in range(start, len(data)):
             row = data[i]
             formula = formulas[i][0] if i < len(formulas) and formulas[i] else ""
@@ -159,7 +160,29 @@ class QualityGate:
                 continue
             
             status = row[1].strip()
-            if status in ("Applied", "Rejected"):
+            if status == "Applied":
+                # Teach the brain from a manual Applied mark before skipping.
+                # PipelineBrain.learn_user_applied marks the company trusted,
+                # records the title as desirable and learns the city, and
+                # get_title_preference_score reads those titles to rank future
+                # jobs. The hook existed fully implemented and was never fired,
+                # so none of that learning had ever happened.
+                try:
+                    import sys as _s_qg, os as _o_qg
+                    _s_qg.path.insert(0, _o_qg.path.dirname(
+                        _o_qg.path.dirname(_o_qg.path.abspath(__file__))))
+                    from scripts.pipeline_brain import PipelineBrain as _PB
+                    _pb = _PB.get()
+                    _co = row[2].strip()
+                    _ti = row[3].strip()
+                    _loc = row[8].strip() if len(row) > 8 else ""
+                    if _co and _ti:
+                        _pb.on_job_applied(_co, _ti, _loc)
+                        _applied_taught += 1
+                except Exception as _abe:
+                    log.debug(f"on_job_applied failed: {_abe}")
+                continue
+            if status == "Rejected":
                 continue
 
             company = row[2].strip()

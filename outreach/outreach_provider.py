@@ -355,31 +355,3 @@ class ProviderVerifier:
                 pass
         return pattern
 
-    def discover_pattern(self, parsed, domain):
-        provider = self.get_provider(domain)
-        if provider != "microsoft":
-            return None, None
-
-        f = parsed.get("fa", "").lower()
-        la = parsed.get("lc", "").lower()
-        fi = parsed.get("fi", "").lower()
-
-        if not f or not la:
-            return None, None
-
-        candidates = [
-            (f"{f}.{la}@{domain}", "{first}.{last}"),
-            (f"{fi}{la}@{domain}", "{f}{last}"),
-            (f"{f}{la}@{domain}", "{first}{last}"),
-            (f"{f}_{la}@{domain}", "{first}_{last}"),
-            (f"{f}@{domain}", "{first}"),
-        ]
-
-        for email, pattern in candidates:
-            result = self.verify_email(email, domain)
-            if result == "exists":
-                log.info(f"Pattern discovered: {domain} -> {pattern} (via {email})")
-                return email, pattern
-            elif result == "unknown":
-                break
-        return None, None

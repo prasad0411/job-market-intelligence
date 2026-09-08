@@ -909,10 +909,6 @@ class JobrightRedirectResolver:
 
     _email_html_cache = {}
 
-    @staticmethod
-    def cache_email_html(email_id, html_content):
-        """Store email HTML for URL extraction"""
-        JobrightRedirectResolver._email_html_cache[email_id] = html_content
 
     @staticmethod
     def resolve(jobright_url, email_html=None):
@@ -2624,9 +2620,6 @@ class SourceParsers:
     def parse_ziprecruiter_email(soup, url):
         return None
 
-    @staticmethod
-    def parse_adzuna_email(soup, url):
-        return None
 
 
 
