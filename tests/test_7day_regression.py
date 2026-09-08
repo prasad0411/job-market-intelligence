@@ -47,7 +47,12 @@ try:
     check("13. leading zeros stripped", n("0001234"), n("1234"))
     check("14. case-insensitive", n("JR-12345"), n("jr_12345"))
     check("15. punctuation stripped", n("REQ-2024-001"), n("req2024001"))
-    check("16. pattern for rokt saved", b.best_pattern_for("rokt.com"), "{first}.{last}")
+    # 16 reads a pattern the brain LEARNED from real sends. Absent on a fresh
+    # checkout, so skip rather than assert against state CI cannot have.
+    if b.best_pattern_for("rokt.com") is None:
+        skip("16. pattern for rokt saved", "no learned pattern, fresh checkout or CI")
+    else:
+        check("16. pattern for rokt saved", b.best_pattern_for("rokt.com"), "{first}.{last}")
 except Exception as e: skip("9-16 ByteDance/Brain", e)
 
 # ─────────────────────────────────────────────────────────────
@@ -189,11 +194,18 @@ try:
     check("87. workable scraper exists", hasattr(ds, "scrape_workable"), True)
     check("88. workable merged in loader",
           'discovered.get("workable"' in open("aggregator/direct_sources.py").read(), True)
+    # 89-92 assert how much the system has LEARNED over weeks of running,
+    # not whether the code is correct. On a fresh checkout or in CI there is
+    # no accumulated discovery data, so they can never pass there. Skip rather
+    # than seed fake counts, which would make the assertions meaningless.
     b = json.load(open(".local/brain.json")).get("discovered_ats", {})
-    check("89. greenhouse discovered >100", len(b.get("greenhouse",{})) > 100, True)
-    check("90. lever discovered >30", len(b.get("lever",{})) > 30, True)
-    check("91. ashby discovered >100", len(b.get("ashby",{})) > 100, True)
-    check("92. 5 platforms discovered", len([k for k,v in b.items() if v]) >= 5, True)
+    if not any(b.values()):
+        skip("89-92 discovery volume", "no accumulated discovered_ats, fresh checkout or CI")
+    else:
+        check("89. greenhouse discovered >100", len(b.get("greenhouse",{})) > 100, True)
+        check("90. lever discovered >30", len(b.get("lever",{})) > 30, True)
+        check("91. ashby discovered >100", len(b.get("ashby",{})) > 100, True)
+        check("92. 5 platforms discovered", len([k for k,v in b.items() if v]) >= 5, True)
 except Exception as e: skip("85-92 discovery", e)
 
 # ─────────────────────────────────────────────────────────────
