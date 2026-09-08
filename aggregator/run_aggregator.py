@@ -3238,11 +3238,18 @@ class UnifiedJobAggregator:
                 self._run_dedup_keys = set()
             if not hasattr(self, "_run_dedup_jobids"):
                 self._run_dedup_jobids = set()
-            _dedup_key = re.sub(r"[^a-z0-9]", "", f"{_co_lower}_{_ti_lower}")
-            if _dedup_key in self._run_dedup_keys:
+            # Named _dedup_key until 2026-09-08, which shadowed the module
+            # level _dedup_key() function for the WHOLE function body. Python
+            # binds a name as local if it is assigned anywhere in scope, so
+            # the call at the post-fetch dedup gate raised
+            # "TypeError: 'str' object is not callable" on every job that
+            # reached comprehensive processing: 279 failures in one run, 1,018
+            # fresh jobs reduced to 7 valid.
+            _run_key = re.sub(r"[^a-z0-9]", "", f"{_co_lower}_{_ti_lower}")
+            if _run_key in self._run_dedup_keys:
                 logging.info(f"GATE REJECT | Run dedup: {_co_hint} | {_ti_hint[:40]}")
                 return None
-            self._run_dedup_keys.add(_dedup_key)
+            self._run_dedup_keys.add(_run_key)
 
             # ── GATE 5: Extract job_id from URL early (for dedup) ──
             _url_job_id = None
