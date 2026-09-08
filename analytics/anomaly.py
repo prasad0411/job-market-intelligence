@@ -210,6 +210,38 @@ class AnomalyDetector:
 
         return all_alerts
 
+    def spc_report(self) -> List[Dict]:
+        """Generate SPC report for all sources — for dashboard/digest."""
+        sources = self.store.conn.execute("""
+            SELECT DISTINCT source FROM jobs 
+            WHERE source NOT IN ('Unknown', '')
+            AND processed_at >= ?
+        """, ((datetime.now() - timedelta(days=self.lookback_days)).strftime("%Y-%m-%d"),)).fetchall()
+
+        report = []
+        for row in sources:
+            stats = self.compute_source_stats(row["source"])
+            if stats and len(stats.daily_rates) >= 3:
+                report.append({
+                    "source": stats.source,
+                    "mean_rate": round(stats.mean, 1),
+                    "std": round(stats.std, 1),
+                    "current_rate": round(stats.current_rate, 1),
+                    "z_score": round(stats.z_score, 2),
+                    "ucl": round(stats.ucl, 1),
+                    "lcl": round(stats.lcl, 1),
+                    "days_tracked": len(stats.daily_rates),
+                    "total_volume": sum(stats.daily_volumes),
+                    "status": (
+                        "critical" if stats.z_score < -2.5 else
+                        "warning" if stats.z_score < -2.0 else
+                        "degraded" if stats.current_rate < stats.lcl else
+                        "healthy"
+                    ),
+                })
+
+        report.sort(key=lambda r: r["mean_rate"], reverse=True)
+        return report
 
     def trend_data(self, source: str, days: int = 14) -> List[Dict]:
         """Daily valid rate for a single source — for charting."""
