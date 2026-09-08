@@ -269,8 +269,8 @@ not what it does when everything works.
 ### Setup
 
 ```bash
-git clone https://github.com/prasad0411/JobsScrapingAutomation.git
-cd JobsScrapingAutomation
+git clone https://github.com/prasad0411/job-market-intelligence.git
+cd job-market-intelligence
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
