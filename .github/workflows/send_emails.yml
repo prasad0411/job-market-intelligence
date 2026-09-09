@@ -57,6 +57,10 @@ jobs:
 
       - name: Check if within send window
         id: time_check
+        # exit(1) here means "outside window", not a fault. Without
+        # continue-on-error it failed the job and the failure() handler
+        # opened an issue on every off-hours run - 102 of them.
+        continue-on-error: true
         run: |
           python3 -c "
           from datetime import datetime
