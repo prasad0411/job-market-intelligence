@@ -23,6 +23,22 @@ jobs:
             google-api-python-client google-auth-httplib2 google-auth-oauthlib \
             numpy pandas scikit-learn
 
+      - name: Lint ratchet
+        run: |
+          pip install ruff==0.16.5
+          BASE=$(cat .ruff_baseline)
+          NOW=$(ruff check . --statistics | sed -n 's/^Found \([0-9]*\) error.*/\1/p')
+          NOW=${NOW:-0}
+          echo "baseline $BASE, current $NOW"
+          if [ "$NOW" -gt "$BASE" ]; then
+            echo "::error::lint count rose from $BASE to $NOW"
+            ruff check . --output-format concise
+            exit 1
+          fi
+          if [ "$NOW" -lt "$BASE" ]; then
+            echo "::notice::down to $NOW - lower .ruff_baseline to lock it in"
+          fi
+
       - name: Seed minimal state
         run: |
           mkdir -p .local
