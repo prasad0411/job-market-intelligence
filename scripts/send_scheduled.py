@@ -279,6 +279,128 @@ def _mark_sent(ws, company, title, date_str):
     except Exception as e:
         log.debug(f"Sheet mark-sent failed: {e}")
 
+
+# ── two-phase claim ───────────────────────────────────────────────────────────
+# Sends are not atomic with the sheet write. _send_draft() succeeds, then the
+# folder-move block runs, and only then is the date recorded. A crash in that
+# gap used to leave the row blank and eligible for a re-send. The claim closes
+# the window: written before the send, replaced by the date after.
+
+CLAIM_PREFIX = "SENDING"
+CLAIM_STALE_MIN = 30
+
+
+def _claim_state(cell, now=None):
+    """blank -> free, fresh claim -> locked, old claim -> stale, else sent."""
+    s = str(cell or "").strip()
+    if not s:
+        return "free"
+    if not s.startswith(CLAIM_PREFIX):
+        return "sent"
+    now = now or datetime.datetime.now()
+    try:
+        ts = datetime.datetime.fromisoformat(s.split("|", 1)[1])
+    except Exception:
+        return "stale"  # unparseable claim: let Graph decide
+    return "stale" if (now - ts).total_seconds() > CLAIM_STALE_MIN * 60 else "locked"
+
+
+def _find_row(ws, company, title):
+    """Return (row_number, sent_dt_cell) for this company/title, or (None, None)."""
+    try:
+        data = ws.get_all_values()
+    except Exception as e:
+        log.debug(f"Row lookup failed: {e}")
+        return None, None
+    need = max(C["company"], C["title"], C["sent_dt"])
+    for i, row in enumerate(data[1:], start=2):
+        if (len(row) > need and
+                row[C["company"]].strip().lower() == company.lower() and
+                row[C["title"]].strip().lower() == title.lower()):
+            return i, row[C["sent_dt"]]
+    return None, None
+
+
+def _sent_via_graph(token, to_email, subject, days_back=14):
+    """Ask Sent Items whether this mail already went out.
+
+    The sheet and sent_log.json are both caches; the mail folder is the only
+    real record. Used to resolve a stale claim left by a crashed run.
+    Returns True only on a positive match - a failed lookup returns False so
+    an API problem never blocks a legitimate send.
+    """
+    try:
+        since = (datetime.datetime.utcnow()
+                 - datetime.timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        safe = subject.replace("'", "''")
+        r = _req.get(
+            f"https://graph.microsoft.com/v1.0/users/{MS_SENDER_EMAIL}"
+            f"/mailFolders/sentitems/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"$filter": f"subject eq '{safe}' and sentDateTime ge {since}",
+                    "$top": 25},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            log.debug(f"Sent-items lookup HTTP {r.status_code}")
+            return False
+        for m in r.json().get("value", []):
+            for rec in m.get("toRecipients", []):
+                if rec["emailAddress"]["address"].lower() == to_email.lower():
+                    return True
+    except Exception as e:
+        log.debug(f"Sent-items lookup failed: {e}")
+    return False
+
+
+def _claim_row(ws, company, title, token=None, to_email=None, subject=None):
+    """Mark the row as in-flight. Returns row number, or None to skip sending."""
+    row, cell = _find_row(ws, company, title)
+    if row is None:
+        return None
+    state = _claim_state(cell)
+    if state == "sent":
+        log.info(f"Already sent per sheet: {company} | {title}")
+        return None
+    if state == "locked":
+        log.warning(f"Row claimed by another run, skipping: {company} | {title}")
+        return None
+    if state == "stale":
+        if token and to_email and subject and _sent_via_graph(token, to_email, subject):
+            log.warning(f"Stale claim but mail is in Sent Items - recording: {company}")
+            _confirm_row(ws, row, datetime.datetime.now().strftime("%b %d, %Y"))
+            return None
+        log.info(f"Stale claim, no mail found - retrying: {company} | {title}")
+    try:
+        ws.update_acell(f"{_cl(C['sent_dt'])}{row}",
+                        f"{CLAIM_PREFIX}|{datetime.datetime.now().isoformat(timespec='seconds')}")
+        time.sleep(0.5)
+        return row
+    except Exception as e:
+        log.warning(f"Claim write failed for {company}: {e}")
+        return None
+
+
+def _confirm_row(ws, row, date_str):
+    """Replace the claim with the real send date."""
+    try:
+        ws.update_acell(f"{_cl(C['sent_dt'])}{row}", date_str)
+        time.sleep(0.5)
+        return True
+    except Exception as e:
+        log.error(f"CONFIRM FAILED row {row} - mail sent, sheet still claimed: {e}")
+        return False
+
+
+def _release_row(ws, row):
+    """Clear a claim after a send that never happened."""
+    try:
+        ws.update_acell(f"{_cl(C['sent_dt'])}{row}", "")
+        time.sleep(0.5)
+    except Exception as e:
+        log.debug(f"Release failed row {row}: {e}")
+
+
 # ── sent log ──────────────────────────────────────────────────────────────────
 
 def _load_sl():
@@ -523,11 +645,31 @@ def main():
 
         print(f"  → {company} | {to_email} | {subject[:45]}")
 
+        _claimed_row = None
+        if company and title:
+            if ws is None:
+                try:
+                    ws = _get_sheets(); time.sleep(1)
+                except Exception as _we:
+                    log.debug(f"Sheet open failed: {_we}")
+            if ws is not None:
+                _claimed_row = _claim_row(ws, company, title, token, to_email, subject)
+                if _claimed_row is None:
+                    _r, _c = _find_row(ws, company, title)
+                    if _r is not None and _claim_state(_c) in ("sent", "locked"):
+                        print(f"  ⊘ Skipped (already sent or in flight): {company}")
+                        skipped += 1
+                        continue
+
         try:
             _send_draft(token, msg_id)
             print(f"    ✓ Sent")
             sent_n += 1
             _rec_sent(sl, to_email, subject)
+            # Confirm immediately: the folder-move block below is slow and the
+            # row must not sit claimed while it runs.
+            if _claimed_row is not None:
+                _confirm_row(ws, _claimed_row, now_et.strftime("%b %d, %Y"))
             # Record pattern success in Brain — self-learning
             try:
                 domain = to_email.split("@")[1]
@@ -573,8 +715,8 @@ def main():
             except Exception as me:
                 log.debug(f"Move failed: {me}")
 
-            # Update sheet
-            if company and title:
+            # Update sheet (fallback: only if the claim path did not run)
+            if company and title and _claimed_row is None:
                 try:
                     if ws is None:
                         ws = _get_sheets(); time.sleep(1)
@@ -585,6 +727,10 @@ def main():
         except Exception as e:
             print(f"    ✗ {e}")
             failed += 1
+            # Send raised: release the claim so the row is retried next run.
+            if _claimed_row is not None:
+                _release_row(ws, _claimed_row)
+                _claimed_row = None
             # Smart bounce-retry: find next best pattern and queue new draft
             try:
                 next_email = _next_best_email(to_email, company, brain)
