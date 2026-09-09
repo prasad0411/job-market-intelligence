@@ -1325,8 +1325,19 @@ class Sheets:
 
     @staticmethod
     def _fallback_send_at():
-        now = datetime.datetime.now()
-        target = now.replace(hour=11, minute=0) + datetime.timedelta(days=1)
+        """Used when the location has no parseable state.
+
+        datetime.now() is server-local: on a GitHub runner that is UTC, so the
+        old naive 11:00 was really 07:00 ET. Anchor to Eastern explicitly and
+        label it honestly.
+        """
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.datetime.now(ZoneInfo("US/Eastern"))
+        except Exception:
+            now = datetime.datetime.now()
+        target = now.replace(hour=11, minute=0, second=0, microsecond=0)
+        target += datetime.timedelta(days=1)
         while target.weekday() >= 5:
             target += datetime.timedelta(days=1)
         return target.strftime("%b %d, 11:00 AM ET"), target.strftime("%b %d, %Y")

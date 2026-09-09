@@ -396,7 +396,10 @@ def _is_dup(sl, email, subj):
     if not ts:
         return False
     try:
-        return (datetime.datetime.now() - datetime.datetime.fromisoformat(ts)).days < 7
+        # 30 days, not 7: a contact re-entering the sheet after a week was
+        # eligible for a second identical email. The sheet claim covers the
+        # in-flight race; this covers the same person reappearing later.
+        return (datetime.datetime.now() - datetime.datetime.fromisoformat(ts)).days < 30
     except Exception:
         return False
 
