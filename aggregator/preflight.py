@@ -804,5 +804,12 @@ def run_preflight(verbose=True):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ok, probs = run_preflight()
-    print("\n" + ("ALL CHECKS PASSED" if ok else "%d PROBLEM(S)" % len(probs)))
-    raise SystemExit(0 if ok else 1)
+    # ADVISORY findings are informational (dead code counts and similar) and
+    # must not fail CI; anything else is a wiring fault and should.
+    hard = [p for p in probs if "ADVISORY" not in p]
+    if not probs:
+        print("\nALL CHECKS PASSED")
+    else:
+        print("\n%d PROBLEM(S), %d blocking, %d advisory"
+              % (len(probs), len(hard), len(probs) - len(hard)))
+    raise SystemExit(1 if hard else 0)
