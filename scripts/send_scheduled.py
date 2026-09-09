@@ -103,21 +103,6 @@ SENT_LOG_FILE = os.path.join(_LOCAL, "sent_log.json")
 SCHEDULED_FOLDER  = "Scheduled Outreach"
 COLD_EMAILING_FOLDER = "Cold Emailing"
 
-_TZ_MAP = {
-    "new york": "America/New_York",   "boston": "America/New_York",
-    "washington": "America/New_York", "atlanta": "America/New_York",
-    "miami": "America/New_York",      "pittsburgh": "America/New_York",
-    "chicago": "America/Chicago",     "dallas": "America/Chicago",
-    "houston": "America/Chicago",     "austin": "America/Chicago",
-    "minneapolis": "America/Chicago", "kansas city": "America/Chicago",
-    "denver": "America/Denver",       "salt lake city": "America/Denver",
-    "phoenix": "America/Phoenix",
-    "san francisco": "America/Los_Angeles", "seattle": "America/Los_Angeles",
-    "los angeles": "America/Los_Angeles",   "san jose": "America/Los_Angeles",
-    "portland": "America/Los_Angeles",      "san diego": "America/Los_Angeles",
-    "silicon valley": "America/Los_Angeles","bay area": "America/Los_Angeles",
-}
-
 # ── auth ──────────────────────────────────────────────────────────────────────
 
 def _get_token():
@@ -198,20 +183,6 @@ def _header(msg, name):
     return ""
 
 # ── timezone helpers ──────────────────────────────────────────────────────────
-
-def _tz_for(company, location, brain):
-    try:
-        tz = brain._data.get("companies", {}).get(company.lower(), {}).get("timezone")
-        if tz:
-            return tz
-    except Exception:
-        pass
-    loc = (location or "").lower()
-    for city, tz in _TZ_MAP.items():
-        if city in loc:
-            return tz
-    return "America/New_York"
-
 
 def _should_send(send_at_iso):
     if not send_at_iso:
@@ -547,7 +518,6 @@ def main():
         send_at_iso  = _header(msg, "X-Send-At")
         company      = _header(msg, "X-Company")
         title        = _header(msg, "X-Job-Title")
-        location     = _header(msg, "X-Location")
         confidence   = _header(msg, "X-Confidence")
 
         # Skip very low confidence emails (pattern guess, unverified)

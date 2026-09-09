@@ -67,8 +67,9 @@ jobs:
           from zoneinfo import ZoneInfo
           now = datetime.now(ZoneInfo('US/Eastern'))
           hour = now.hour
-          # Only send between 9 AM and 4 PM ET (covers 3 PM send + buffer)
-          if 9 <= hour <= 16:
+          # Sends target SEND_HOUR=9 local, so 9 AM-2 PM ET covers ET..HI.
+          # Window runs to 6 PM because GitHub cron drifts 2-3h.
+          if 9 <= hour <= 18:
               print('Within send window:', now.strftime('%I:%M %p ET'))
           else:
               print('Outside send window:', now.strftime('%I:%M %p ET'))
