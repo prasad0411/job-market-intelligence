@@ -72,6 +72,11 @@ _ROLE_REJECTION_REASONS = {
 }
 
 
+# Top-level keys owned by another writer; Brain must never write them back
+# from its in-memory copy. See the merge in save().
+_FOREIGN_KEYS = ("source_quality",)
+
+
 class Brain:
     _instance = None
     _lock = __import__('threading').Lock()
@@ -155,6 +160,16 @@ class Brain:
                             # copy over everything newer: 722 companies
                             # became 44. Merge instead, so a stale process
                             # can only add, never delete.
+                            # Keys this class does not own. PipelineBrain
+                            # writes top-level source_quality; Brain only ever
+                            # holds a copy loaded at process start. The
+                            # one-level merge below let that stale copy
+                            # overwrite each source's entry, so totals written
+                            # at 17:27 reverted to Sep 4 values and runs
+                            # stayed 0 forever. Disk wins for these.
+                            if _k in _FOREIGN_KEYS:
+                                _out[_k] = _v
+                                continue
                             _mine = _out[_k]
                             if isinstance(_v, dict) and isinstance(_mine, dict):
                                 _merged = dict(_v)
