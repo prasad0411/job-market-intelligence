@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Lint only the Python files staged for this commit.
+#
+# The repo carries 150 pre-existing ruff findings, so linting everything would
+# fail every commit and get disabled within a day. Checking just the staged
+# files keeps new code clean while the backlog is paid down incidentally.
+#
+# Bypass with:  git commit --no-verify
+set -uo pipefail
+
+FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.py' | grep -v '\.bak' || true)
+[ -z "$FILES" ] && exit 0
+
+if [ -d venv ]; then RUFF="venv/bin/ruff"; else RUFF="ruff"; fi
+command -v "$RUFF" >/dev/null 2>&1 || { echo "pre-commit: ruff not found, skipping"; exit 0; }
+
+# Syntax first: an unparseable file is always a real error, never pre-existing.
+FAILED=0
+for f in $FILES; do
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$f" 2>/dev/null \
+    || { echo "pre-commit: $f does not parse"; FAILED=1; }
+done
+[ "$FAILED" -eq 1 ] && { echo "Commit blocked: fix the syntax error, or use --no-verify"; exit 1; }
+
+# Test the exit code, not the output: ruff prints "All checks passed!" on
+# success, which a non-empty-output test reads as a failure.
+OUT=$($RUFF check $FILES --output-format concise 2>&1)
+RC=$?
+if [ "$RC" -ne 0 ]; then
+  echo "$OUT"
+  echo
+  echo "pre-commit: ruff findings in staged files (above)."
+  echo "Many are pre-existing; the ratchet in CI is what gates the total."
+  echo "Commit anyway with: git commit --no-verify"
+  exit 1
+fi
+exit 0
