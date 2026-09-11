@@ -1221,8 +1221,11 @@ class Finder:
             # misses, which is exactly the case it was written for.
             # find_public_email only uses name and domain internally.
             _dom_pf = dom or ""
-            if _dom_pf and p.get("fna") and p.get("lna"):
-                _full = f"{p['fna']} {p['lna']}"
+            # fna/lna exist nowhere in this file; the parsed-name keys are
+            # fa/la. The guard could never be true, so the public-web fallback
+            # never ran - the one path that needs no API credits at all.
+            if _dom_pf and p.get("fa") and p.get("la"):
+                _full = f"{p['fa']} {p['la']}"
                 _pub = find_public_email(_full, _dom_pf, _dom_pf, verifier=getattr(self, 'verifier', None))
                 if _pub and _pub.get("email"):
                     log.info(f"Public-web fallback found {_pub['email']} ({_pub['source']})")

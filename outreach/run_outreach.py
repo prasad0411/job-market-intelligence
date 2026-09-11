@@ -583,6 +583,21 @@ def main():
     except Exception as e:
         log.warning(f"Bounce scan failed (non-fatal): {e}")
 
+    # A missing provider key is the difference between a working run and one
+    # that extracts nothing, and it is otherwise invisible in the output.
+    try:
+        from outreach.outreach_config import key as _pk
+        _missing = [_n for _n in ("APOLLO_API_KEY", "HUNTER_API_KEY",
+                                  "SNOV_API_KEY", "PROSPEO_API_KEY")
+                    if not (_pk(_n) or "").strip()]
+        if len(_missing) == 4:
+            log.warning("NO EMAIL PROVIDER API KEY SET - email lookups will "
+                        "all fail. Set at least one in .env: %s",
+                        ", ".join(_missing))
+            print("  WARNING: no email provider API key set; 0 emails will be found")
+    except Exception as _ke:
+        log.debug("Provider key check skipped: %s", _ke)
+
     phase_pull(sh)
     sh.sync_with_valid()
 

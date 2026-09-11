@@ -229,6 +229,54 @@ def check_health():
     except Exception as e:
         log.debug(f"ATS discovery check failed: {e}")
 
+
+    # ── CHECK: email providers usable? ──
+    # Every provider key was empty for 11 days. Lookups failed, the run still
+    # exited 0, and nothing anywhere said why 0 emails were extracted.
+    try:
+        from outreach.outreach_config import key as _pkey
+        _PROVIDERS = ("APOLLO_API_KEY", "HUNTER_API_KEY",
+                      "SNOV_API_KEY", "PROSPEO_API_KEY")
+        _credits = {}
+        _cf = os.path.join(BASE, ".local", "outreach_credits.json")
+        if os.path.exists(_cf):
+            with open(_cf) as _f:
+                _credits = json.load(_f)
+
+        _configured = [k for k in _PROVIDERS if (_pkey(k) or "").strip()]
+        if not _configured:
+            alerts.append(
+                "NO EMAIL PROVIDER CONFIGURED: all of {} are empty - every "
+                "email lookup fails and outreach extracts 0 per run".format(
+                    ", ".join(_PROVIDERS)))
+        else:
+            _usable, _stale = 0, []
+            for _k in _configured:
+                _n = _k.replace("_API_KEY", "").lower()
+                _c = _credits.get(_n) or {}
+                _used, _lim = _c.get("used", 0), _c.get("lim", 0)
+                if _c.get("ok", True) and not (_lim and _used >= _lim):
+                    _usable += 1
+                if _used == 0 and _c.get("reset"):
+                    try:
+                        _d = (now - datetime.datetime.strptime(
+                            _c["reset"], "%Y-%m-%d")).days
+                        if _d >= 7:
+                            _stale.append("{} ({}d)".format(_n, _d))
+                    except Exception as _de:
+                        log.debug("provider reset parse: {}".format(_de))
+            if _usable == 0:
+                alerts.append(
+                    "ALL EMAIL PROVIDER QUOTAS EXHAUSTED: {} configured, "
+                    "none usable".format(len(_configured)))
+            elif _stale and len(_stale) == len(_configured):
+                alerts.append(
+                    "EMAIL PROVIDERS UNUSED: no API call in 7+ days for {} - "
+                    "keys may be invalid or the finder is never reached".format(
+                        ", ".join(_stale)))
+    except Exception as _pe:
+        log.debug("Provider health check failed: {}".format(_pe))
+
     # Save state
     state["last_check"] = now.isoformat()
     save_state(state)
