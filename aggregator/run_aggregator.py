@@ -519,6 +519,82 @@ def _dedup_key(company, title):
     return _U.normalize_text("{}_{}".format(c, title or ""))
 
 
+
+# ── zapply.jobs slug decoding ─────────────────────────────────────────────────
+
+_ZAPPLY_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _decode_zapply_slug(slug):
+    """zapply.jobs/l/d/<slug> -> direct ATS URL, or None if unrecognised.
+
+    The redirect resolves to zapply.jobs/jobs/ (a listing page), so following
+    it gives nothing usable. The slug encodes what is needed:
+        greenhouse-accenturefederalservices-4712847006
+        sr-WesternDigital-744000138717897
+        ashby-clickhouse-<uuid>
+        lever-diversified-automation-<uuid>
+        workday-pnc-external-R233163
+    """
+    if not slug:
+        return None
+    slug = slug.split("?")[0].strip()
+    parts = slug.split("-")
+    if len(parts) < 2:
+        return None
+    plat = parts[0].lower()
+
+    if plat == "greenhouse" and len(parts) >= 3:
+        return "https://job-boards.greenhouse.io/{}/jobs/{}".format(parts[1], parts[-1])
+
+    if plat == "sr" and len(parts) >= 3:
+        return "https://jobs.smartrecruiters.com/{}/{}".format(parts[1], parts[-1])
+
+    if plat in ("ashby", "lever"):
+        # the employer segment may itself contain hyphens; the id is a UUID
+        tail = "-".join(parts[-5:])
+        if not _ZAPPLY_UUID_RE.match(tail):
+            return None
+        employer = "-".join(parts[1:-5])
+        if not employer:
+            return None
+        host = "jobs.ashbyhq.com" if plat == "ashby" else "jobs.lever.co"
+        return "https://{}/{}/{}".format(host, employer, tail)
+
+    if plat == "workday" and len(parts) >= 4:
+        tenant, site, req = parts[1], parts[2], parts[-1]
+        host = _zapply_workday_host(tenant)
+        if not host:
+            return None
+        return "https://{}/en-US/{}/job/{}".format(host, site, req)
+
+    return None
+
+
+def _zapply_workday_host(tenant):
+    """Find the wd1/wd3/wd5 host for a Workday tenant.
+
+    The slug carries the tenant but not the numbered subdomain, and guessing
+    wd1 produces dead links for every tenant on wd3 or wd5. Resolve against
+    the boards the pipeline already knows; return None when unknown so the
+    caller keeps the original URL rather than inventing one.
+    """
+    try:
+        from aggregator.direct_sources import WORKDAY_COMPANIES
+    except Exception:
+        return None
+    t = (tenant or "").lower()
+    for _name, _v in WORKDAY_COMPANIES.items():
+        try:
+            domain, wd_tenant, _site = _v
+        except Exception:
+            continue
+        if str(wd_tenant).lower() == t:
+            return domain
+    return None
+
+
 class UnifiedJobAggregator:
     def __init__(self):
         print("=" * 80)
@@ -4459,6 +4535,13 @@ class UnifiedJobAggregator:
                 if not url_match:
                     url_match = _zre.search(r'(https?://[^\s)]+)', url_cell)
                 job_url = url_match.group(1) if url_match else ""
+                # zapply.jobs links are redirects to a listing page, not the
+                # posting. Decode the slug to a real ATS URL; keep the original
+                # when the prefix is not one we understand.
+                if job_url and "zapply.jobs/l/d/" in job_url:
+                    _decoded = _decode_zapply_slug(job_url.split("/l/d/", 1)[-1])
+                    if _decoded:
+                        job_url = _decoded
                 if company and title and job_url:
                     jobs.append({
                         "company": company,
