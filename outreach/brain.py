@@ -943,7 +943,11 @@ class Brain:
 
 
     def migrate_legacy_files(self):
-        if self.data.get("_migration_v2_done"):
+        # self.data was a typo for self._data: the AttributeError was caught by
+        # the non-fatal handler at __init__, so migration never ran once. The
+        # legacy pattern files were therefore never imported, which is why
+        # domains and mx_cache stayed empty while every other store filled up.
+        if self._data.get("_migration_v2_done") and self._data.get("_legacy_migration_done"):
             return
         """
         One-time migration: read legacy .local/ JSON files into Brain.
