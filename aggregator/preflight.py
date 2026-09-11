@@ -679,6 +679,33 @@ def check_uncalled_functions():
                         os.path.relpath(path, BASE), str(_e)[:60]))
                     continue
                 rel = os.path.relpath(path, BASE)
+                # `from x import swallow as _s` then `_s(e)` is a call to
+                # swallow(), but the tree only shows `_s`. Unresolved, every
+                # aliased function reads as dead - swallow() itself was
+                # reported uncalled while 62 sites were calling it.
+                _amap = {}
+                for _n in _ast.walk(tree):
+                    if isinstance(_n, _ast.ImportFrom):
+                        for _a in _n.names:
+                            if _a.asname and _a.name != "*":
+                                _amap[_a.asname] = _a.name.rsplit(".", 1)[-1]
+                    elif (isinstance(_n, _ast.Assign) and len(_n.targets) == 1
+                            and isinstance(_n.targets[0], _ast.Name)):
+                        _v = _n.value
+                        if isinstance(_v, _ast.Name):
+                            _amap[_n.targets[0].id] = _v.id
+                        elif isinstance(_v, _ast.Attribute):
+                            _amap[_n.targets[0].id] = _v.attr
+
+                def _unalias(_nm, _m=_amap):
+                    _seen = 0
+                    while _nm in _m and _seen < 10:
+                        _nxt = _m[_nm]
+                        if _nxt == _nm:
+                            break
+                        _nm, _seen = _nxt, _seen + 1
+                    return _nm
+
                 for node in _ast.walk(tree):
                     if isinstance(node, _ast.FunctionDef):
                         defs.setdefault(node.name, rel)
@@ -690,8 +717,10 @@ def check_uncalled_functions():
                             calls.add(f.attr)
                     elif isinstance(node, _ast.Name):
                         refs.add(node.id)
+                        refs.add(_unalias(node.id))
                     elif isinstance(node, _ast.Attribute):
                         refs.add(node.attr)
+                        refs.add(_unalias(node.attr))
 
     dead = []
     for name, where in sorted(defs.items()):
