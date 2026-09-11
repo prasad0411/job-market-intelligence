@@ -29,8 +29,8 @@ def _notify(msg):
         req = urllib.request.Request(_url, data=data,
                                      headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass  # Never crash the pipeline over a notification
+    except Exception as _swx:
+        from aggregator.swallowed import swallow as _s; _s('run_outreach._notify', _swx)
 
 
 from outreach.outreach_config import LOG_FILE
@@ -137,7 +137,8 @@ def phase_draft_existing(sheets, mailer):
                     try:
                         from outreach.brain import Brain
                         Brain.get().store_verified_contact(co, "hm", name, email, confidence=0.9)
-                    except Exception: pass
+                    except Exception as _swx:
+                        from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_draft_existing', _swx)
                 elif "Duplicate" not in result.get("error", ""):
                     parts.append(f"HM draft failed ({name.split()[0]})")
                     stats["draft_failed"] += 1
@@ -168,7 +169,8 @@ def phase_draft_existing(sheets, mailer):
                     try:
                         from outreach.brain import Brain
                         Brain.get().store_verified_contact(co, "rec", name, email, confidence=0.9)
-                    except Exception: pass
+                    except Exception as _swx:
+                        from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_draft_existing', _swx)
                 elif "Duplicate" not in result.get("error", ""):
                     parts.append(f"Rec draft failed ({name.split()[0]})")
                     stats["draft_failed"] += 1
@@ -239,8 +241,8 @@ def phase_extract_and_draft(sheets, finder, mailer):
                 if _today_sent > 5 and _today_bounced > 0 and _today_bounced / _today_sent > 0.10:
                     log.warning(f"SAFETY PAUSE: {_today_bounced}/{_today_sent} bounced today ({_today_bounced*100//_today_sent}%)")
                     _daily_pause = True
-    except Exception:
-        pass
+    except Exception as _swx:
+        from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_extract_and_draft', _swx)
     _failed_pat_file = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), ".local", "failed_patterns.json")
     _failed_pats = {}
@@ -248,16 +250,16 @@ def phase_extract_and_draft(sheets, finder, mailer):
         import json as _json
         if os.path.exists(_failed_pat_file):
             _failed_pats = _json.load(open(_failed_pat_file))
-    except Exception:
-        pass
+    except Exception as _swx:
+        from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_extract_and_draft', _swx)
     _dh_file = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), ".local", "domain_pattern_history.json")
     _dh_data = {}
     try:
         if os.path.exists(_dh_file):
             _dh_data = _json.load(open(_dh_file))
-    except Exception:
-        pass
+    except Exception as _swx:
+        from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_extract_and_draft', _swx)
 
     for row in rows:
         rn = row["row"]
@@ -335,7 +337,8 @@ def phase_extract_and_draft(sheets, finder, mailer):
                 try:
                     from outreach.brain import Brain
                     _known_hm = Brain.get().get_verified_contact(row["co"], "hm")
-                except Exception: pass
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_extract_and_draft', _swx)
                 if _known_hm:
                     hm_res = {"email": _known_hm["email"], "confidence": _known_hm["confidence"],
                                "source": "brain_cache", "name": _known_hm.get("name","")}
@@ -361,7 +364,8 @@ def phase_extract_and_draft(sheets, finder, mailer):
                                 hm_res["email"],
                                 confidence=hm_res.get("confidence", 0.7)
                             )
-                        except Exception: pass
+                        except Exception as _swx:
+                            from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_extract_and_draft', _swx)
                 else:
                     hm_failed = True
                     stats["extract_failed"] += 1
@@ -404,7 +408,8 @@ def phase_extract_and_draft(sheets, finder, mailer):
                                 rec_res["email"],
                                 confidence=rec_res.get("confidence", 0.7)
                             )
-                        except Exception: pass
+                        except Exception as _swx:
+                            from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_extract_and_draft', _swx)
             if rec_emails:
                 sheets.write_email(rn, "rec", ", ".join(rec_emails), rec_res["source"])
                 # Write confidence (use lowest of HM and Rec — weakest link)
@@ -458,7 +463,8 @@ def phase_extract_and_draft(sheets, finder, mailer):
                     from outreach.brain import Brain
                     Brain.get().store_verified_contact(
                         row["co"], "hm", row.get("hn",""), hm_e, confidence=0.9)
-                except Exception: pass
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_extract_and_draft', _swx)
             else:
                 if "Duplicate" not in result["error"]:
                     draft_parts.append("HM draft failed")
@@ -485,7 +491,8 @@ def phase_extract_and_draft(sheets, finder, mailer):
                     from outreach.brain import Brain
                     Brain.get().store_verified_contact(
                         row["co"], "rec", row.get("rn",""), rec_e, confidence=0.9)
-                except Exception: pass
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('run_outreach.phase_extract_and_draft', _swx)
             else:
                 if "Duplicate" not in result["error"]:
                     draft_parts.append("Recruiter draft failed")
@@ -621,6 +628,15 @@ def main():
     d = phase_draft_existing(sh, ma)
     s["drafts"] += d["drafts"]
     s["draft_failed"] += d["draft_failed"]
+    # 62 handlers in outreach/ record counts here. Without this call they
+    # record into nothing - the aggregator prints its summary, outreach did
+    # not, which is why its silent failures stayed silent.
+    try:
+        from aggregator.swallowed import report as _sw_report
+        _sw_report(verbose=True)
+    except Exception as _sre:
+        log.debug(f"Swallow report failed: {_sre}")
+
     print("-" * 40)
     print(
         f"Email IDs: {s['extracted']} extracted, {s['extract_failed']} failed ({s['processed']} processed)"

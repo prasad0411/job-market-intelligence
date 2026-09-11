@@ -54,16 +54,16 @@ class ProviderVerifier:
         if os.path.exists(path):
             try:
                 return json.load(open(path))
-            except Exception:
-                pass
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_provider._load', _swx)
         return {}
 
     @staticmethod
     def _save(path, data):
         try:
             _atomic_write_json(path, data)
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_provider._save', _swx)
 
     # ── MX Provider Detection ─────────────────────────────────
 
@@ -79,8 +79,8 @@ class ProviderVerifier:
         # Sync to Brain
         try:
             Brain.get().set_mx(domain, provider != "other", provider if provider != "other" else "")
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_provider.get_provider', _swx)
         if provider != "other":
             log.info(f"MX detected: {domain} -> {provider}")
         return provider
@@ -119,8 +119,8 @@ class ProviderVerifier:
                 return "google"
             if any(kw in output for kw in _MICROSOFT_KW):
                 return "microsoft"
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_provider._mx_fallback', _swx)
         return "other"
 
     # ── Email Verification Router ─────────────────────────────
@@ -170,8 +170,8 @@ class ProviderVerifier:
                         _pat = "{first}_{last}"
                     if _pat:
                         Brain.get().record_pattern_success(dom, _pat, email_lower)
-                except Exception:
-                    pass
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_provider.verify_email', _swx)
 
         return result
 
@@ -298,7 +298,8 @@ class ProviderVerifier:
                     rf"[a-zA-Z0-9_.+-]+@{re.escape(domain)}", r.text
                 )
                 found.extend(emails)
-            except Exception:
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_provider.mine_website_pattern', _swx)
                 continue
 
         # Filter: remove generic emails, keep personal ones
@@ -351,7 +352,7 @@ class ProviderVerifier:
         if pattern:
             try:
                 Brain.get().record_pattern_success(domain, pattern, f"mined:{domain}")
-            except Exception:
-                pass
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_provider.mine_website_pattern', _swx)
         return pattern
 

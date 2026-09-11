@@ -48,8 +48,8 @@ def _load_domain_cache():
             raw = json.load(open(_DOMAIN_CACHE_FILE))
             cutoff = __import__('time').time() - _DOMAIN_CACHE_TTL_DAYS * 86400
             return {k: v for k, v in raw.items() if v.get("ts", 0) > cutoff}
-    except Exception:
-        pass
+    except Exception as _swx:
+        from aggregator.swallowed import swallow as _s; _s('outreach_finder._load_domain_cache', _swx)
     return {}
 
 
@@ -103,8 +103,8 @@ class Finder:
             if cached and cached.get("name"):
                 log.debug(f"LinkedIn name from Brain cache: {slug} → {cached['name']}")
                 return cached["name"]
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._extract_name_from_linkedin_url', _swx)
 
         # 2. Slug decomposition
         clean_slug = slug
@@ -226,8 +226,8 @@ class Finder:
                 "cached_at": _t.time(),
             }
             b.save()
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._cache_linkedin_name', _swx)
 
 
     def _verify_and_score(self, email, domain, source_hint=""):
@@ -289,8 +289,8 @@ class Finder:
                 _pc_result = self.pc.get(_domain_guess)
                 if _pc_result and _pc_result.get("confidence", 0) >= 0.95:
                     log.info(f"PatternCache early exit for {company}: {_pc_result}")
-            except Exception:
-                pass
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_finder.find', _swx)
             _cached_contact = _b.get_verified_contact(company, _role)
             if _cached_contact and not _cached_contact.get("bounced"):
                 _cached_email = _cached_contact.get("email", "")
@@ -406,7 +406,8 @@ class Finder:
                         try:
                             import logging as _el
                             _el.getLogger("outreach_audit").info(f"FOUND | {email} | website_mining+provider | confidence=80 | domain={domains[0]}")
-                        except: pass
+                        except Exception as _swx:
+                            from aggregator.swallowed import swallow as _s; _s('outreach_finder.find', _swx)
                         self._clear_retry(retry_key)
                         log.info(f"Website mined + verified: {email}")
                         return r
@@ -479,8 +480,8 @@ class Finder:
                 log.info(f"Retry expired (3d TTL): {k}")
             if expired:
                 _atomic_write_json(RETRY_FILE, rt)
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._cleanup_caches', _swx)
         # Email verify cache trim (keep newest 1000)
         ev_path = os.path.join(os.path.dirname(RETRY_FILE), "email_verify_cache.json")
         try:
@@ -490,8 +491,8 @@ class Finder:
                 trimmed = dict(list(ev.items())[-1000:])
                 _atomic_write_json(ev_path, trimmed)
                 log.info(f"Email cache trimmed: {len(ev)} -> 1000")
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._cleanup_caches', _swx)
 
     def _resolve(self, company):
         if not company:
@@ -567,8 +568,8 @@ class Finder:
                     log.info(f"Brain domain correction: {d} → {correction}")
                     filtered.append(correction)
                     continue
-            except Exception:
-                pass
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_finder._resolve', _swx)
             filtered.append(d)
         doms = filtered
 
@@ -624,8 +625,8 @@ class Finder:
                         if prov in mx_host:
                             provider = prov
                             break
-                except Exception:
-                    pass
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_finder._mx', _swx)
                 b.set_mx(domain, True, provider)
                 return True
             except Exception as _e:
@@ -702,7 +703,7 @@ class Finder:
                     elif v == "risky":
                         risky.append(e)
                 except Exception as _e:
-                    pass  # suppressed: use log.debug(_e) to investigate
+                    from aggregator.swallowed import swallow as _s; _s('outreach_finder._par', _e)
             for f in futs:
                 f.cancel()
         if len(valid) == 1:
@@ -752,8 +753,8 @@ class Finder:
             if brain_override:
                 log.debug(f"Domain override from Brain: {company} → {brain_override}")
                 return brain_override
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._get_override', _swx)
         try:
             if os.path.exists(OVERRIDES_FILE):
                 overrides = json.load(open(OVERRIDES_FILE))
@@ -767,8 +768,8 @@ class Finder:
                         for k, v in overrides.items():
                             bd[k.lower()] = v
                         b.save()
-                except Exception:
-                    pass
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_finder._get_override', _swx)
                 _company = company.strip()
                 if _company in overrides:
                     return overrides[_company]
@@ -855,7 +856,7 @@ class Finder:
                     dc = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=5)
                     daemon_running = dc.returncode == 0
                 except Exception as _e:
-                    pass  # suppressed: use log.debug(_e) to investigate
+                    from aggregator.swallowed import swallow as _s; _s('outreach_finder._rok', _e)
 
                 # Step 2: If daemon not running, launch Docker Desktop (macOS)
                 if not daemon_running and platform.system() == "Darwin":
@@ -873,7 +874,7 @@ class Finder:
                                 daemon_running = True
                                 break
                         except Exception as _e:
-                            pass  # suppressed: use log.debug(_e) to investigate
+                            from aggregator.swallowed import swallow as _s; _s('outreach_finder._rok', _e)
                     if not daemon_running:
                         log.warning("Docker Desktop did not start within 60s")
                         print("  Docker Desktop did not start within 60s")
@@ -896,7 +897,7 @@ class Finder:
                                 print("  Reacher email verifier ready")
                                 return self._reacher
                         except Exception as _e:
-                            pass  # suppressed: use log.debug(_e) to investigate
+                            from aggregator.swallowed import swallow as _s; _s('outreach_finder._rok', _e)
                     else:
                         log.warning(f"Docker compose failed: {result.stderr[:500]}")
 
@@ -1043,16 +1044,16 @@ class Finder:
                     _blacklist = json.load(_f)
                 _blocked = _blacklist.get(domain, [])
                 candidates = [c for c in candidates if c.split("@")[0] not in _blocked]
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._batch_reacher_verify', _swx)
         
         # Check bounce cache — skip known bounced emails
         try:
             from outreach.bounce_scanner import BounceScanner
             _bounced = set(BounceScanner.load_bounced().keys())
             candidates = [c for c in candidates if c.lower() not in _bounced]
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._batch_reacher_verify', _swx)
         
         if not candidates:
             log.info(f"Batch Reacher: all patterns exhausted for {domain}")
@@ -1158,8 +1159,8 @@ class Finder:
                         elif "_" in local:
                             log.info(f"Google pattern discovery: {domain} uses first_last (from {email})")
                             return "first_last"
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._google_email_pattern_discovery', _swx)
         return None
 
     def _mx_priority_pattern(self, domain):

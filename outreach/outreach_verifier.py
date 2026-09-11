@@ -195,8 +195,8 @@ def has_valid_mx(domain):
         try:
             dns.resolver.resolve(domain, "MX", lifetime=10)
             return True
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.has_valid_mx', _swx)
         try:
             dns.resolver.resolve(domain, "A", lifetime=10)
             return True
@@ -236,11 +236,11 @@ class CircuitBreaker:
                         b._data["circuit_breaker"]["sent_today"] = data.get("sent", 0)
                         b._data["circuit_breaker"]["bounced_today"] = data.get("bounced", 0)
                         b._data["circuit_breaker"]["tripped"] = data.get("tripped", False)
-                except Exception:
-                    pass
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_verifier.load', _swx)
                 return data
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.load', _swx)
         return CircuitBreaker._fresh()
 
     @staticmethod
@@ -340,8 +340,8 @@ class DomainHistory:
             if os.path.exists(DOMAIN_HISTORY_FILE):
                 _DH_CACHE = json.load(open(DOMAIN_HISTORY_FILE))
                 return _DH_CACHE
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.load', _swx)
         _DH_CACHE = {}
         return _DH_CACHE
 
@@ -377,8 +377,8 @@ class DomainHistory:
         try:
             if _Brain:
                 _Brain.get().record_pattern_success(domain, pattern, email)
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.record_success', _swx)
 
     @staticmethod
     def record_failure(domain, pattern, email):
@@ -404,8 +404,8 @@ class DomainHistory:
         try:
             if _Brain:
                 _Brain.get().record_pattern_failure(domain, pattern)
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.record_failure', _swx)
 
     @staticmethod
     def get_confirmed_pattern(domain):
@@ -417,8 +417,8 @@ class DomainHistory:
                 brain_pat = _Brain.get().best_pattern_for(domain)
                 if brain_pat:
                     return brain_pat
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.get_confirmed_pattern', _swx)
         # Fall back to local file cache
         data = DomainHistory.load()
         entry = data.get(domain, {})
@@ -431,8 +431,8 @@ class DomainHistory:
                 if age_days > 90:
                     log.info(f"Domain history: {domain} pattern stale ({age_days}d)")
                     return None
-            except Exception:
-                pass
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_verifier.get_confirmed_pattern', _swx)
         return pattern
 
     @staticmethod
@@ -444,8 +444,8 @@ class DomainHistory:
             if _Brain:
                 if _Brain.get().is_failed_pattern(domain, pattern):
                     return True
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.is_failed_pattern', _swx)
         data = DomainHistory.load()
         entry = data.get(domain, {})
         return pattern in entry.get("failed_patterns", [])
@@ -505,8 +505,8 @@ class EmailVerifier:
                 if _domain_thresh and _domain_thresh > AUTO_SEND_THRESHOLD:
                     _effective_threshold = _domain_thresh
                     log.debug(f"Domain threshold {domain}: {_effective_threshold} (raised from bounces)")
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.verify', _swx)
 
         # ── Gate 1: Suspicious domain check ──
         if is_suspicious_email(email):

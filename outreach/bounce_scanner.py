@@ -26,8 +26,8 @@ class BounceScanner:
         try:
             if os.path.exists(BOUNCED_EMAILS_FILE):
                 return json.load(open(BOUNCED_EMAILS_FILE))
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('bounce_scanner.load_bounced', _swx)
         return {}
 
     @staticmethod
@@ -64,8 +64,8 @@ class BounceScanner:
                     reputation[domain]["reason"] = f"{count} bounced emails — domain blocked"
             with open(rep_file, "w") as f:
                 json.dump(reputation, f, indent=2)
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('bounce_scanner.update_domain_reputation', _swx)
 
     @staticmethod
     def save_bounced(cache: dict):
@@ -192,8 +192,8 @@ class BounceScanner:
                                         _t[_dom] = _new
                                         _b.save()
                                         log.info(f"Brain: raised threshold {_dom}: {_cur} → {_new}")
-                            except Exception:
-                                pass
+                            except Exception as _swx:
+                                from aggregator.swallowed import swallow as _s; _s('bounce_scanner.scan', _swx)
                             
                             # Learn from bounce: record failed pattern in DomainHistory
                             try:
@@ -292,7 +292,8 @@ class BounceScanner:
                     age_hours = (now - sent_dt).total_seconds() / 3600
                     if age_hours < 24:
                         continue
-                except Exception:
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('bounce_scanner.scan', _swx)
                     continue
                 # If email was sent and NOT bounced, confirm the pattern
                 for email in [hm_email, rec_email]:
@@ -448,8 +449,8 @@ class BounceScanner:
                     "utf-8", errors="replace"
                 )
                 texts.append(decoded)
-            except Exception:
-                pass
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('bounce_scanner._collect_text_parts', _swx)
         for part in payload.get("parts", []):
             texts.extend(BounceScanner._collect_text_parts(part))
         return texts

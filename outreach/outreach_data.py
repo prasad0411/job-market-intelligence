@@ -395,8 +395,8 @@ class Sheets:
                                 if _vr_key == _co_key:
                                     _status = _vr[1].strip().lower() if len(_vr) > 1 else ""
                                     break
-                    except Exception:
-                        pass
+                    except Exception as _swx:
+                        from aggregator.swallowed import swallow as _s; _s('outreach_data.pull', _swx)
                     if _status == "applied":
                         _extract_yes = True
                     if _extract_yes:
@@ -481,7 +481,7 @@ class Sheets:
                     )
                     self._p()
                 except Exception as _e:
-                    pass  # suppressed: use log.debug(_e) to investigate
+                    from aggregator.swallowed import swallow as _s; _s('outreach_data.pull', _e)
 
             # Write all data
             self._retry(
@@ -504,7 +504,7 @@ class Sheets:
                         },
                     )
                 except Exception as _e:
-                    pass  # suppressed: use log.debug(_e) to investigate
+                    from aggregator.swallowed import swallow as _s; _s('outreach_data.pull', _e)
 
             # Re-apply hyperlinks for LinkedIn URL columns (batch write destroys them)
             li_requests = []
@@ -1261,7 +1261,7 @@ class Sheets:
                             if not any(g in domain for g in generic):
                                 Sheets._url_domain_cache[key] = domain
                         except Exception as _e:
-                            pass  # suppressed: use log.debug(_e) to investigate
+                            from aggregator.swallowed import swallow as _s; _s('outreach_data.get_job_url_domain', _e)
             except Exception as _e:
                 logging.debug("suppressed: %s", _e)
                 Sheets._url_domain_cache = {}
@@ -1297,7 +1297,7 @@ class Sheets:
                                 state_code = code
                                 break
                     except Exception as _e:
-                        pass  # suppressed: use log.debug(_e) to investigate
+                        from aggregator.swallowed import swallow as _s; _s('outreach_data.compute_send_at', _e)
                 if state_code and state_code in STATE_TO_TIMEZONE:
                     tz_name = STATE_TO_TIMEZONE[state_code]
 
@@ -1415,7 +1415,7 @@ class Credits:
                         }
                         ch = True
                 except Exception as _e:
-                    pass  # suppressed: use log.debug(_e) to investigate
+                    from aggregator.swallowed import swallow as _s; _s('outreach_data._auto_reset', _e)
             if n not in self._d:
                 self._d[n] = {
                     "lim": APIS[n]["limit"],
@@ -1442,15 +1442,15 @@ class Credits:
         self._save()
         try:
             Brain.get().record_api_result(p, credit_used=True, email_found=False)
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_data.use', _swx)
 
     def record_email_found(self, api_name: str):
         """Call when an API returns a valid email — tracks ROI per credit."""
         try:
             Brain.get().record_api_result(api_name, credit_used=False, email_found=True)
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_data.record_email_found', _swx)
 
     def burn_rate_alerts(self) -> list:
         """Return alert strings for APIs approaching monthly exhaustion."""
@@ -1697,8 +1697,8 @@ class PatternCache:
         self._save()
         try:
             Brain.get().record_pattern_success(domain, pat, "")
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_data.store', _swx)
 
     def detect(self, email, parsed):
         if not email or "@" not in email or not parsed:

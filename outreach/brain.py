@@ -168,8 +168,8 @@ class Brain:
                                         _seen.add(_key)
                                         _acc.append(_item)
                                 _out[_k] = _acc
-                except Exception:
-                    pass
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('brain.save', _swx)
                 tmp = self._path + ".tmp"
                 with open(tmp, "w") as f:
                     json.dump(_out, f, indent=2)
@@ -752,8 +752,8 @@ class Brain:
                         f"(lifetime avg: {lifetime_avg:.0%}).\n\n"
                         f"Check if the source changed format or went stale."
                     )
-                except Exception:
-                    pass
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('brain.record_source_run', _swx)
         self.save()
 
     # ── Job ID Dedup Registry ─────────────────────────────────────────────────
