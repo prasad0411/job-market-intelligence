@@ -301,7 +301,9 @@ def _sent_via_graph(token, to_email, subject, days_back=14):
     an API problem never blocks a legitimate send.
     """
     try:
-        since = (datetime.datetime.utcnow()
+        # utcnow() is deprecated and slated for removal; use an aware UTC
+        # datetime and format it back to the Z form Graph expects.
+        since = (datetime.datetime.now(datetime.timezone.utc)
                  - datetime.timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
         safe = subject.replace("'", "''")
         r = _req.get(
