@@ -44,7 +44,6 @@ for f in $FILES; do
   fi
 done
 if [ "$WORSE" -eq 1 ]; then
-  echo "$OUT"
   echo
   echo "pre-commit: ruff findings in staged files (above)."
   echo "Many are pre-existing; the ratchet in CI is what gates the total."
