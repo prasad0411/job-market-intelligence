@@ -125,6 +125,64 @@ def log_detailed_rejection(
 # ============================================================================
 
 
+
+# ── hard non-tech gate ────────────────────────────────────────────────────────
+# NON_TECHNICAL_PURE is scored against TECHNICAL_ROLE_KEYWORDS, and both
+# "engineer" and "engineering" count as technical - so every non-software
+# engineering discipline passed the filter. These phrases are certain, so they
+# are checked before any scoring happens.
+#
+# Narrow by design. Fail-open is the rule: only unambiguous disciplines appear
+# here, and any software signal in the title overrides the match.
+
+_HARD_NON_TECH_PATTERNS = (
+    r"packaging\s+engineer",
+    # "quality engineer" deliberately omitted: you applied to BorgWarner's
+    # Quality Engineering Intern, and QE at a software company is a real
+    # SWE-adjacent role. It was the only phrase here with a known false
+    # positive against 1,797 existing rows.
+    r"process\s+engineer",
+    r"mechanical\s+engineer",
+    r"industrial\s+engineer",
+    r"materials?\s+engineer",
+    r"civil\s+engineer",
+    r"structural\s+engineer",
+    r"chemical\s+engineer",
+    r"manufacturing\s+engineer",
+    r"biomedical\s+engineer",
+    r"aerospace\s+engineer",
+    r"\bpackaging\b",
+    r"\baudit\b",
+    r"\baccounting\b",
+    r"sales\s+development\s+representative",
+    r"\bcpa\b",
+)
+
+# A software signal outranks the discipline: "Software Quality Engineer" is a
+# SWE role, "Quality Engineer" is not.
+_HARD_NON_TECH_RESCUE = (
+    r"\bsoftware\b", r"\bsde\b", r"\bmachine\s+learning\b", r"\bml\b",
+    r"\bdata\s+(engineer|scien|analy)", r"\bbackend\b", r"\bfrontend\b",
+    r"\bfull[\s-]?stack\b", r"\bdevops\b", r"\bcloud\b",
+    r"\bplatform\s+engineer", r"\bsite\s+reliability\b", r"\bsre\b",
+    r"\bcomputer\s+scien", r"\bautomation\s+engineer", r"\bfirmware\b",
+    r"\bembedded\s+software\b", r"\bai\b", r"\bartificial\s+intelligence\b",
+)
+
+_HARD_NT_RE = [re.compile(_p, re.I) for _p in _HARD_NON_TECH_PATTERNS]
+_HARD_NT_RESCUE_RE = [re.compile(_p, re.I) for _p in _HARD_NON_TECH_RESCUE]
+
+
+def _is_hard_non_tech(title):
+    """True only when the title is certainly not a CS/SWE role."""
+    t = (title or "").strip()
+    if not t:
+        return False
+    if any(_r.search(t) for _r in _HARD_NT_RESCUE_RE):
+        return False
+    return any(_h.search(t) for _h in _HARD_NT_RE)
+
+
 class TitleProcessor:
     @staticmethod
     @lru_cache(maxsize=512)
@@ -633,6 +691,12 @@ class TitleProcessor:
                     return True
         except (ImportError, AttributeError):
             pass
+
+        # Hard gate, before any scoring: disciplines that are never CS/SWE.
+        # The count-based check below cannot catch these, because "engineer"
+        # is itself a technical keyword.
+        if _is_hard_non_tech(title):
+            return False
 
         combined_text = (title + " " + description).lower()
 
