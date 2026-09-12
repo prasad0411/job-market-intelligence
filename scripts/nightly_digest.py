@@ -124,6 +124,38 @@ def _recent_errors():
         return []
 
 
+def _top_rejections(days=7, limit=6):
+    """Top rejection reasons from the analytics jobs table.
+
+    5,665 discarded rows carry a reason and nothing ever read them. This is
+    the signal that says which filter is doing the most work - and which one
+    has started rejecting everything.
+    """
+    try:
+        import sqlite3
+        # this module defines no repo-root constant; derive it
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        p = os.path.join(_root, ".local", "analytics.db")
+        if not os.path.exists(p):
+            return []
+        # entry_date is 'N/A' on every row and processed_at is a display
+        # string with no year ('22 December, 11:14 PM'); neither can bound a
+        # window. run_id is run_YYYYMMDD_HHMMSS and sorts correctly as text.
+        since = "run_" + (datetime.datetime.now()
+                          - datetime.timedelta(days=days)).strftime("%Y%m%d")
+        c = sqlite3.connect(p)
+        rows = c.execute(
+            "SELECT rejection_reason, COUNT(*) FROM jobs "
+            "WHERE outcome='discarded' AND rejection_reason != '' "
+            "AND run_id >= ? GROUP BY rejection_reason "
+            "ORDER BY 2 DESC LIMIT ?", (since, limit)).fetchall()
+        c.close()
+        return [(str(r)[:46], n) for r, n in rows]
+    except Exception as e:
+        log.debug(f"Top rejections failed: {e}") if "log" in globals() else None
+        return []
+
+
 def _scheduler_health():
     """Read scheduler_state.json and return health summary."""
     f = os.path.join(_LOCAL, "scheduler_state.json")
@@ -191,7 +223,7 @@ def _outreach_queue_size():
         return -1
 
 
-def _build_html(stats, sent, bounced, errors, cb, pending, burn_alerts=None, sched_health=None, anomaly_alerts=None, dq_report=None):
+def _build_html(stats, sent, bounced, errors, cb, pending, burn_alerts=None, sched_health=None, anomaly_alerts=None, dq_report=None, top_rejections=None):
     now = datetime.datetime.now().strftime("%b %d, %Y %I:%M %p")
     ok_color = "#2d8a4e"
     warn_color = "#b45309"
@@ -230,6 +262,7 @@ def _build_html(stats, sent, bounced, errors, cb, pending, burn_alerts=None, sch
         {row("Bounces (24h)", bounced, warn_color if bounced > 0 else ok_color)}
         {row("Pending extraction", pending if pending >= 0 else "?")}
         {row("Circuit breaker", cb, cb_color)}
+        {"".join(row("&nbsp;&nbsp;" + _r, _n) for _r, _n in (top_rejections or []))}
       </table>
 
       {agg_html}
@@ -297,7 +330,8 @@ def main():
     except Exception:
         pass
 
-    html = _build_html(stats, sent, bounced, errors, cb, pending, burn_alerts, sched_health, anomaly_alerts, dq_report)
+    _top_rej = _top_rejections()
+    html = _build_html(stats, sent, bounced, errors, cb, pending, burn_alerts, sched_health, anomaly_alerts, dq_report, _top_rej)
 
     try:
         import requests as _req

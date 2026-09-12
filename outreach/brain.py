@@ -74,7 +74,10 @@ _ROLE_REJECTION_REASONS = {
 
 # Top-level keys owned by another writer; Brain must never write them back
 # from its in-memory copy. See the merge in save().
-_FOREIGN_KEYS = ("source_quality",)
+# error_log is capped at 1000 by PipelineBrain._append, but the list-union
+# merge below kept re-adding trimmed entries, so it reached 8,879. Full
+# history is archived in .local/error_log_archive_*.json.
+_FOREIGN_KEYS = ("source_quality", "error_log")
 
 
 class Brain:
