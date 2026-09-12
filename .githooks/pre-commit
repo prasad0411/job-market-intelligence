@@ -24,9 +24,26 @@ done
 
 # Test the exit code, not the output: ruff prints "All checks passed!" on
 # success, which a non-empty-output test reads as a failure.
-OUT=$($RUFF check $FILES --output-format concise 2>&1)
-RC=$?
-if [ "$RC" -ne 0 ]; then
+# Compare against HEAD: block only when a file gains findings. Demanding zero
+# would block every commit touching the 114 pre-existing S110 sites, and a hook
+# that always fires gets disabled within a day.
+WORSE=0
+for f in $FILES; do
+  NOW_N=$($RUFF check "$f" --output-format concise 2>/dev/null | grep -c "^$f:" || true)
+  TMP=$(mktemp -d); mkdir -p "$TMP/$(dirname "$f")"
+  if git show "HEAD:$f" > "$TMP/$f" 2>/dev/null; then
+    WAS_N=$($RUFF check "$TMP/$f" --output-format concise 2>/dev/null | grep -c ":" || true)
+  else
+    WAS_N=0
+  fi
+  rm -rf "$TMP"
+  if [ "$NOW_N" -gt "$WAS_N" ]; then
+    echo "pre-commit: $f went from $WAS_N to $NOW_N findings"
+    $RUFF check "$f" --output-format concise 2>/dev/null
+    WORSE=1
+  fi
+done
+if [ "$WORSE" -eq 1 ]; then
   echo "$OUT"
   echo
   echo "pre-commit: ruff findings in staged files (above)."
