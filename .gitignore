@@ -45,3 +45,4 @@ screenshots/
 htmlcov/
 *.precap_*
 .vscode/
+.local/lake/
