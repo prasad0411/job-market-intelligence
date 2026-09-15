@@ -1,14 +1,16 @@
 # Job Aggregation Pipeline
 
-[![Tests](https://img.shields.io/badge/tests-250_passing-brightgreen)](tests/)
-[![Preflight](https://img.shields.io/badge/preflight-12_wiring_checks-blue)](aggregator/preflight.py)
+[![Tests](https://img.shields.io/badge/tests-261_passing-brightgreen)](tests/)
+[![Preflight](https://img.shields.io/badge/preflight-19_wiring_checks-blue)](aggregator/preflight.py)
+[![dbt](https://img.shields.io/badge/dbt-35_data_tests-FF694B?logo=dbt&logoColor=white)](data_platform/dbt/)
 [![Python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
-[![Coverage](https://img.shields.io/badge/sources-12_feeds_·_871_ATS_boards-orange)]()
+[![Sources](https://img.shields.io/badge/sources-21_feeds_·_1117_ATS_boards-orange)]()
 
-A self-maintaining data pipeline that aggregates early-career software engineering
-roles from 12 curated feeds, 871 applicant-tracking-system boards, and Indeed —
+A self-maintaining data platform that aggregates early-career software engineering
+roles from 21 tracked feeds and 1,117 discovered applicant-tracking-system boards —
 then deduplicates, validates, enriches with official H-1B sponsorship data, and
-writes the survivors to a tracked spreadsheet three times a day.
+lands the survivors in both a tracked spreadsheet and a partitioned analytics
+lakehouse, three times a day.
 
 It is built around one assumption: **every component will eventually fail
 silently, including the components built to detect failure.** Most of the design
@@ -19,6 +21,7 @@ below follows from taking that seriously.
 ## Contents
 
 - [Architecture](#architecture)
+- [Data platform](#data-platform)
 - [Data sources](#data-sources)
 - [Engineering decisions](#engineering-decisions)
 - [Self-maintenance](#self-maintenance)
@@ -74,6 +77,129 @@ flowchart TD
 
 Every run begins with a **preflight check** that verifies the wiring above is
 actually connected — see [Self-maintenance](#self-maintenance).
+
+---
+
+## Data platform
+
+The operational pipeline writes a fact table; a separate layer turns that into
+analytics. Both run from the same repo.
+
+```mermaid
+flowchart LR
+    subgraph ingest["Ingestion"]
+        A["21 job feeds<br/>1,117 ATS boards"] --> B["Scrapers<br/>Selenium · REST"]
+        B --> C["Validation<br/>dedup · enrichment"]
+        C --> D[("analytics.db<br/>16.2K jobs")]
+        C --> E["Google Sheets<br/>tracked rows"]
+    end
+
+    subgraph lake["Medallion layers · PySpark"]
+        D --> F["Bronze<br/>raw, nothing dropped<br/>part. source/week"]
+        F --> G["Silver<br/>validated · deduped<br/>part. source/week"]
+        F --> H["Quarantine<br/>part. by reason"]
+        G --> I["Gold<br/>company × track<br/>part. by track"]
+    end
+
+    subgraph marts["Warehouse · dbt on DuckDB"]
+        G --> J["stg_jobs"]
+        H --> K["stg_quarantine"]
+        J --> L["dim_company"]
+        J --> M["fct_weekly_ingest<br/>incremental"]
+        K --> N["fct_rejection_funnel"]
+        J --> O["fct_source_quality"]
+        K --> O
+    end
+
+    subgraph orch["Orchestration · Airflow"]
+        P["extract"] --> Q["bronze"] --> R["silver"]
+        R --> S{"quality gate"}
+        S -->|pass| T["gold"] --> U["dbt build"] --> V["dbt test"]
+        S -->|fail| W["halt, do not publish"]
+    end
+```
+
+### Layers
+
+**Bronze** is the raw extract with partition columns added and nothing removed.
+Partitioned by `source` and ISO `week`: source is the natural filter for
+per-feed quality analysis, week bounds the reprocessing window for backfills.
+Both prune on scan.
+
+**Silver** holds validated, deduplicated rows. The dedup grain is
+company + title + source, keyed on a normalized company name so `Rivian` and
+`Rivian Technologies` collapse to one row rather than two.
+
+**Quarantine** is a sibling of Silver, partitioned by the rule that rejected
+each row. Nothing is deleted at the Silver gate — a bad filter stays
+recoverable, and the rejection rate is queryable instead of inferred. Of
+16,206 rows, 6,177 currently quarantine: 3,919 malformed URLs, 1,363 duplicate
+grains, 739 search-fallback URLs, 156 missing or placeholder companies.
+
+**Gold** aggregates at company × resume-track grain with valid-rate,
+source-coverage, and sponsorship rollups across 3,531 companies.
+
+### Schemas are declared, not inferred
+
+Spark infers column types from the data and fails outright when a column is
+null in every row — which is the case for `page_age_days`, `entry_date`, and
+`processing_time_ms`. Declaring the schema removes the guess and pins types so
+a column cannot silently change type between runs when the data shifts.
+
+### dbt marts
+
+Six models across staging and marts with 35 tests: uniqueness, nullability,
+accepted values, numeric ranges, and a composite-key check on the incremental
+model's grain.
+
+`fct_weekly_ingest` materializes incrementally with `delete+insert` over a
+lookback window, so late-arriving rows inside the window reconcile rather than
+appending duplicates. Full history rebuilds on `--full-refresh`.
+
+The range tests earned their place immediately: a `valid_rate` macro
+interpolated its denominator without parentheses, so
+`cast(a as double) / a + b` evaluated as `(a/a) + b`. A company with 3 valid
+and 7 discarded postings scored 8.0 instead of 0.3, and any company with zero
+valid postings produced NaN. 1,961 of 3,331 aggregate rows were wrong, and the
+accepted-range test caught all of them.
+
+### Orchestration
+
+The Airflow DAG chains extract → bronze → silver → gold → dbt build → dbt test,
+with:
+
+- **A quality gate** that halts the run when the Silver pass rate drops below
+  threshold. The threshold is set from observed weekly distributions, not a
+  target: lifetime pass rate is 62%, but per week it ranges 27–50%, so a
+  threshold picked from the lifetime figure would fail healthy runs and get
+  disabled within a week.
+- **Row-count assertions via XCom** — `bronze` compares its output against
+  what `extract` reported, so rows lost in landing fail loudly rather than
+  shrinking the dataset quietly.
+- **Skip versus fail, distinguished.** A week with no new rows skips. An empty
+  fact table fails. Most DAGs conflate the two.
+- **`max_active_runs=1`**, because the layers write to shared Parquet paths and
+  concurrent runs would interleave partition overwrites. Serialising is cheaper
+  than a distributed lock.
+- **Exponential backoff**, because the extract touches SQLite and dbt touches
+  DuckDB; both lose locks transiently and an immediate retry hits the same
+  contention.
+
+### Commands
+
+```bash
+# medallion layers
+python3 -m data_platform.medallion                  # full run
+python3 -m data_platform.medallion --dry-run        # sizes only, no Spark
+python3 -m data_platform.medallion --week 2026-W38  # backfill one week
+
+# warehouse
+cd data_platform/dbt && dbt build                   # models then tests
+dbt docs generate && dbt docs serve                 # lineage graph
+
+# orchestration
+airflow dags test medallion_pipeline 2026-09-15
+```
 
 ---
 

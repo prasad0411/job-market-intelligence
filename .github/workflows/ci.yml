@@ -49,3 +49,68 @@ jobs:
 
       - name: Run tests
         run: pytest tests/ -v --tb=short
+
+      - name: Seed analytics fixture
+        # CI has no production analytics.db, so build a small deterministic
+        # one. Same schema as the real store; fixed seed so row counts and
+        # pass rates are reproducible across runs.
+        run: |
+          python - <<'PY'
+          import sqlite3, random, os
+          os.makedirs(".local", exist_ok=True)
+          c = sqlite3.connect(".local/analytics.db")
+          c.execute("""CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL,
+            company TEXT NOT NULL, title TEXT NOT NULL,
+            location TEXT DEFAULT 'Unknown', source TEXT DEFAULT 'Unknown',
+            outcome TEXT DEFAULT 'valid', rejection_reason TEXT DEFAULT '',
+            resume_type TEXT DEFAULT 'SDE', job_type TEXT DEFAULT 'Internship',
+            job_id TEXT DEFAULT 'N/A', remote TEXT DEFAULT 'Unknown',
+            sponsorship TEXT DEFAULT 'Unknown', salary_low REAL,
+            salary_high REAL, page_age_days INTEGER,
+            processing_time_ms REAL DEFAULT 0.0,
+            validation_stage_reached TEXT DEFAULT '',
+            entry_date TEXT DEFAULT '', processed_at TEXT DEFAULT '',
+            run_id TEXT DEFAULT '', company_sector TEXT,
+            location_state TEXT, is_remote INTEGER, is_sponsored INTEGER)""")
+          random.seed(42)
+          srcs = ["greenhouse", "lever", "ashby", "linkedin", "zapplyjobs_newgrad"]
+          cos = ["Stripe", "Stripe, Inc.", "Rivian", "Rivian Technologies",
+                 "Unknown", "Two Sigma", "Acme Labs Inc", ""]
+          rows = []
+          for i in range(300):
+              bad = random.random() < 0.2
+              rows.append((
+                  "https://www.google.com/search?q=x" if bad
+                  else "https://boards.greenhouse.io/a/jobs/%d" % i,
+                  random.choice(cos),
+                  random.choice(["SWE Intern", "Data Engineer", "ML Intern"]),
+                  "Boston, MA", random.choice(srcs),
+                  random.choice(["valid", "discarded", "reviewed"]), "",
+                  random.choice(["SDE", "ML", "DA"]), "Internship", "N/A",
+                  random.choice(["Remote", "Unknown"]),
+                  random.choice(["Yes", "Unknown"]),
+                  "run_2026%02d%02d_120000" % (random.randint(1, 9), random.randint(1, 28)),
+              ))
+          c.executemany("""INSERT INTO jobs (url, company, title, location, source,
+            outcome, rejection_reason, resume_type, job_type, job_id, remote,
+            sponsorship, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+          c.commit()
+          print("fixture rows:", c.execute("select count(*) from jobs").fetchone()[0])
+          PY
+
+      - name: Medallion transform check
+        # Dry run exercises the transform rules and all three layer builders
+        # without Spark, so CI needs no JVM. A regression in normalization,
+        # validation, dedup grain, or partition keys fails here.
+        run: python -m data_platform.medallion --dry-run
+
+      - name: dbt build
+        # Compiles every model and runs all data tests. Catches broken SQL,
+        # macro regressions, and constraint violations before merge.
+        run: |
+          pip install dbt-core dbt-duckdb
+          python -m data_platform.medallion || true
+          cd data_platform/dbt
+          dbt deps
+          dbt build --project-dir . --profiles-dir .

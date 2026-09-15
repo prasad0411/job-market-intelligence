@@ -269,7 +269,12 @@ def check_orphaned_modules():
              # Reachable by a human, just not by another module.
              "etl", "queries", "store", "schema", "models",
              "jobspy_source", "term_filter", "h1b_data", "job_age",
-             "atomic_json"}
+             "atomic_json",
+             # Data platform entry points: medallion is a CLI
+             # (python3 -m data_platform.medallion), medallion_dag is loaded by
+             # the Airflow scheduler. transforms is reachable through
+             # medallion, so the graph walk picks it up from here.
+             "medallion", "medallion_dag"}
 
     mods, imports = {}, {}
     for p in _iter_py():
