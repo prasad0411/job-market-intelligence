@@ -46,3 +46,7 @@ htmlcov/
 *.precap_*
 .vscode/
 .local/lake/
+.local/warehouse.duckdb
+data_platform/dbt/target/
+data_platform/dbt/dbt_packages/
+data_platform/dbt/logs/

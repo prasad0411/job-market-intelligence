@@ -1,0 +1,11 @@
+# DuckDB reads the Parquet lake in place, so there is no load step and Hive
+# partition pruning still applies to p_source and p_week.
+job_market_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "../../.local/warehouse.duckdb"
+      threads: 4
+      extensions:
+        - parquet

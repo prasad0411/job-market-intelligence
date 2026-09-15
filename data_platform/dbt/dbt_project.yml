@@ -1,0 +1,25 @@
+name: job_market_analytics
+version: "1.0.0"
+config-version: 2
+profile: job_market_analytics
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+analysis-paths: ["analyses"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  job_market_analytics:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts
+
+vars:
+  # Reprocessing window for incremental models. Late-arriving rows inside this
+  # window are picked up on the next run without a full refresh.
+  lookback_days: 7
+  lake_path: "../../.local/lake"

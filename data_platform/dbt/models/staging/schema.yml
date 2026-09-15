@@ -1,0 +1,54 @@
+version: 2
+
+models:
+  - name: stg_jobs
+    description: >
+      Validated postings from the Silver Parquet layer, one row per
+      company + title + source grain.
+    columns:
+      - name: job_id_pk
+        description: Surrogate key carried from the operational store.
+        tests: [not_null, unique]
+      - name: company_key
+        description: Normalized company name used to join across sources.
+        tests: [not_null]
+      - name: url
+        tests: [not_null]
+      - name: resume_track
+        description: Which resume variant this posting maps to.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["SDE", "ML", "DA", "UNKNOWN"]
+      - name: is_sponsored
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_remote
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+  - name: stg_quarantine
+    description: Rows rejected at the Silver gate, with the rule that rejected them.
+    columns:
+      - name: job_id_pk
+        tests: [not_null]
+      - name: quarantine_reason
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - malformed_url
+                  - search_fallback_url
+                  - missing_company
+                  - placeholder_company
+                  - duplicate_grain
+      - name: reason_family
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["url", "entity", "dedup", "other"]
