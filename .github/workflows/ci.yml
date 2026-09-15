@@ -50,6 +50,14 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
 
+      - name: Set up Java for Spark
+        # PySpark needs a JVM. Without it the medallion write silently
+        # produces no Parquet and dbt then has nothing to read.
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Seed analytics fixture
         # CI has no production analytics.db, so build a small deterministic
         # one. Same schema as the real store; fixed seed so row counts and
@@ -109,8 +117,8 @@ jobs:
         # Compiles every model and runs all data tests. Catches broken SQL,
         # macro regressions, and constraint violations before merge.
         run: |
-          pip install dbt-core dbt-duckdb
-          python -m data_platform.medallion || true
+          pip install dbt-core dbt-duckdb pyspark
+          python -m data_platform.medallion
           cd data_platform/dbt
           dbt deps
           dbt build --project-dir . --profiles-dir .
