@@ -595,6 +595,73 @@ def _zapply_workday_host(tenant):
     return None
 
 
+
+# ── analytics table derivation ───────────────────────────────────────────────
+# analytics.db had five tables and only `jobs` was ever written. These map the
+# counters the pipeline already keeps onto the other four, so run history,
+# per-source quality, the rejection funnel, and company outcomes actually
+# populate instead of staying empty behind working writers.
+
+_REJECTION_STAGES = {
+    "skipped_invalid_title": ("title", "Invalid title"),
+    "skipped_non_tech": ("title", "Not CS/Engineering"),
+    "skipped_senior_role": ("seniority", "Senior/experienced role"),
+    "skipped_wrong_season": ("season", "Wrong season"),
+    "skipped_international": ("location", "Non-US location"),
+    "skipped_blacklisted": ("company", "Blacklisted company"),
+    "skipped_user_blacklist": ("company", "User blacklist"),
+    "skipped_duplicate_url": ("dedup", "Duplicate URL"),
+    "skipped_duplicate_company_title": ("dedup", "Duplicate company+title"),
+    "skipped_inactive": ("liveness", "Posting expired"),
+    "skipped_page_restriction": ("eligibility", "Page restriction"),
+    "skipped_summer_2027": ("season", "Summer 2027"),
+    "failed_simplify_resolution": ("fetch", "Simplify unresolved"),
+    "failed_jobright_resolution": ("fetch", "Jobright unresolved"),
+}
+
+
+def _analytics_source_metrics(source_stats, today):
+    """source_stats -> SourceMetric field tuples. Errors count toward fetched."""
+    out = []
+    for _src, _st in (source_stats or {}).items():
+        _valid = int(_st.get("valid", 0) or 0)
+        _rej = int(_st.get("rejected", 0) or 0)
+        _fetched = _valid + _rej + int(_st.get("errors", 0) or 0)
+        _rate = (_valid / _fetched) if _fetched else 0.0
+        out.append((str(_src), today, _fetched, _valid, _rej, round(_rate, 4)))
+    return out
+
+
+def _analytics_rejection_rows(outcomes, today):
+    """outcomes -> (date, stage, reason, count) for recognised skip counters."""
+    rows = []
+    for _k, _n in (outcomes or {}).items():
+        if _k not in _REJECTION_STAGES:
+            continue
+        _n = int(_n or 0)
+        if _n <= 0:
+            continue
+        _stage, _reason = _REJECTION_STAGES[_k]
+        rows.append((today, _stage, _reason, _n))
+    return rows
+
+
+def _analytics_company_pairs(valid_jobs, discarded_jobs):
+    """-> (company, outcome_type) pairs. Every job counts as seen."""
+    pairs = []
+    for _j in valid_jobs or []:
+        _co = (_j.get("company") or "").strip()
+        if _co and _co.lower() != "unknown":
+            pairs.append((_co, "seen"))
+            pairs.append((_co, "valid"))
+    for _d in discarded_jobs or []:
+        _co = (_d.get("company") or "").strip()
+        if _co and _co.lower() != "unknown":
+            pairs.append((_co, "seen"))
+            pairs.append((_co, "rejected"))
+    return pairs
+
+
 class UnifiedJobAggregator:
     def __init__(self):
         print("=" * 80)
@@ -867,6 +934,63 @@ class UnifiedJobAggregator:
             if _analytics_jobs:
                 _astore.record_jobs_batch(_analytics_jobs, run_id=_run_id)
                 logging.info(f"Analytics: recorded {len(_analytics_jobs)} jobs (run={_run_id})")
+
+            # The four tables below existed with working writers and zero rows
+            # because nothing called them. Each write is guarded separately so
+            # one failure cannot cost the others.
+            # run_aggregator imports `datetime` the module, not the class;
+            # the enclosing block does a local `from datetime import datetime`,
+            # so bind explicitly here rather than depending on that.
+            from datetime import datetime as _dt
+            _today = _dt.now().strftime("%Y-%m-%d")
+
+            try:
+                from analytics.models import RunRecord
+                _astore.record_run(RunRecord(
+                    run_id=_run_id,
+                    started_at=_dt.fromtimestamp(start_time).isoformat(),
+                    finished_at=_dt.now().isoformat(),
+                    elapsed_seconds=round(time.time() - start_time, 1),
+                    valid_count=len(self.valid_jobs),
+                    discarded_count=len(self.discarded_jobs),
+                    duplicate_count=int(self.outcomes.get("skipped_duplicate_url", 0))
+                    + int(self.outcomes.get("skipped_duplicate_company_title", 0)),
+                    error_count=int(self.outcomes.get("failed_http", 0)),
+                ))
+            except Exception as _are:
+                from aggregator.swallowed import swallow as _s3
+                _s3("analytics.record_run", _are)
+
+            try:
+                from analytics.models import SourceMetric
+                _sm = _analytics_source_metrics(dict(self.source_stats), _today)
+                for _s_name, _d, _f, _v, _r, _rate in _sm:
+                    _astore.record_source_metric(SourceMetric(
+                        source=_s_name, date=_d, fetched=_f,
+                        valid=_v, rejected=_r, valid_rate=_rate,
+                    ))
+                logging.info(f"Analytics: {len(_sm)} source metrics recorded")
+            except Exception as _asme:
+                from aggregator.swallowed import swallow as _s3
+                _s3("analytics.source_metrics", _asme)
+
+            try:
+                _rr = _analytics_rejection_rows(dict(self.outcomes), _today)
+                for _d, _stage, _reason, _n in _rr:
+                    _astore.record_rejection(_d, _stage, _reason, _n)
+                logging.info(f"Analytics: {len(_rr)} rejection categories recorded")
+            except Exception as _arje:
+                from aggregator.swallowed import swallow as _s3
+                _s3("analytics.rejection_funnel", _arje)
+
+            try:
+                _cp = _analytics_company_pairs(self.valid_jobs, self.discarded_jobs)
+                for _co, _otype in _cp:
+                    _astore.update_company_outcome(_co, _otype)
+                logging.info(f"Analytics: {len(_cp)} company outcome updates")
+            except Exception as _acoe:
+                from aggregator.swallowed import swallow as _s3
+                _s3("analytics.company_outcomes", _acoe)
             _astore.close()
         except Exception as _a_e:
             logging.debug(f"Analytics recording skipped: {_a_e}")
