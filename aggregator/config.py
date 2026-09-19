@@ -2212,6 +2212,44 @@ ROLE_CATEGORIES = {
 }
 
 TECHNICAL_ROLE_KEYWORDS = {
+    # Added after an audit found 20 applied-to roles being rejected:
+    # these terms were absent, so titles built around them scored zero
+    # technical signal. Singular forms are listed alongside plurals
+    # because matching is substring-based above four characters, so
+    # "systems" does not match "System".
+    "data science",
+    "data scientist",
+    "bi",
+    "informatics",
+    # "ai" requires a word boundary so it does not match railcar or
+    # chair, which means it misses genai written as one word.
+    "genai",
+    "visualization",
+    "analyst",
+    "analysis",
+    "statistics",
+    "quantitative",
+    "database",
+    "system",
+    "control",
+    "automation",
+    "simulation",
+    "modeling",
+    "algorithm",
+    "embedded",
+    "firmware",
+    "hardware",
+    "network",
+    "pipeline",
+    "infrastructure",
+    "technology",
+    "technical",
+    "salesforce",
+    "servicenow",
+    "sap",
+    "workday",
+    "tech",
+
     "software",
     "engineer",
     "engineering",

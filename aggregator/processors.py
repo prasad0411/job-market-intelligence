@@ -183,6 +183,54 @@ def _is_hard_non_tech(title):
     return any(_h.search(t) for _h in _HARD_NT_RE)
 
 
+
+# ── keyword matching ─────────────────────────────────────────────────────────
+# Short keywords were matched as substrings, so "ai" fired on railcar, chair,
+# maintenance and claim, and "ran" fired on branch and grant. Entries of four
+# characters or fewer now require a word boundary; longer entries keep
+# substring matching so stems like "develop" still match "developer".
+
+_KW_BOUNDARY_MAX = 4
+_KW_CACHE = {}
+
+
+def _kw_patterns(keywords, _cache=_KW_CACHE):
+    """Compile once per keyword tuple. Recompiling per title costs real time
+    at 15,000 rows a week."""
+    key = id(keywords)
+    cached = _cache.get(key)
+    if cached is not None:
+        return cached
+    pats = []
+    for kw in keywords:
+        k = (kw or "").strip()
+        if not k:
+            continue
+        if len(k.replace(" ", "")) <= _KW_BOUNDARY_MAX:
+            # not \b: that fails next to & and /, so AI/ML and R&D would miss
+            pat = r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(k)
+        else:
+            pat = re.escape(k)
+        pats.append((kw, re.compile(pat, re.I)))
+    _cache[key] = pats
+    return pats
+
+
+def _kw_hits(keywords, text):
+    """Keywords present in text, boundary-aware for short entries."""
+    t = (text or "").lower()
+    return [kw for kw, rx in _kw_patterns(keywords) if rx.search(t)]
+
+
+def _kw_count(keywords, text):
+    return len(_kw_hits(keywords, text))
+
+
+def _kw_any(keywords, text):
+    t = (text or "").lower()
+    return any(rx.search(t) for _, rx in _kw_patterns(keywords))
+
+
 class TitleProcessor:
     @staticmethod
     @lru_cache(maxsize=512)
@@ -700,17 +748,36 @@ class TitleProcessor:
 
         combined_text = (title + " " + description).lower()
 
-        # Early rejection: purely non-technical title
+        # Early rejection: purely non-technical title.
+        #
+        # Counts are boundary-aware for short keywords. Previously "ai" matched
+        # inside railcar, chair, maintenance and claim, so a title with no
+        # technical content scored _tt > 0 and skipped this reject entirely.
         _ntl = (title or "").lower()
-        _nt = sum(1 for kw in NON_TECHNICAL_PURE if kw in _ntl)
-        _tt = sum(1 for kw in TECHNICAL_ROLE_KEYWORDS if kw in _ntl)
+        _nt = _kw_count(NON_TECHNICAL_PURE, _ntl)
+        _tt = _kw_count(TECHNICAL_ROLE_KEYWORDS, _ntl)
         if _nt > 0 and _tt == 0:
             return False
-        if any(kw in combined_text for kw in TECHNICAL_ROLE_KEYWORDS):
-            non_tech_pure = sum(1 for kw in NON_TECHNICAL_PURE if kw in combined_text)
-            tech_count = sum(1 for kw in TECHNICAL_ROLE_KEYWORDS if kw in combined_text)
 
-            if tech_count > non_tech_pure:
+        # A title with no technical signal at all is not a CS role, whether or
+        # not it happens to contain a non-technical keyword. Without this,
+        # "Bulk and Railcar Unloader" fell through to the pattern checks below
+        # and was accepted by default.
+        if _tt == 0 and not _kw_any(TECHNICAL_ROLE_KEYWORDS, combined_text):
+            return False
+
+        if _kw_any(TECHNICAL_ROLE_KEYWORDS, combined_text):
+            non_tech_pure = _kw_count(NON_TECHNICAL_PURE, combined_text)
+            tech_count = _kw_count(TECHNICAL_ROLE_KEYWORDS, combined_text)
+
+            # >= rather than >: a tie means the evidence is balanced, and
+            # under a fail-open policy balanced evidence keeps the job. This
+            # is what recovered "Sales Team Data Science Intern" and
+            # "Salesforce Support and Analytics Intern", both of which scored
+            # 1-1 and were being discarded. The hard non-tech gate above still
+            # rejects packaging, civil, industrial and the rest outright, so
+            # this cannot readmit them.
+            if tech_count >= non_tech_pure:
                 return True
 
         try:
