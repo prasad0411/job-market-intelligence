@@ -1962,6 +1962,38 @@ class PageFetcher:
             }
             return response, response.url, response.text
 
+        # Auth walls: stop retrying a host that has rejected us repeatedly.
+        #
+        # Indeed began returning 401 on every viewjob URL. Each one then cost
+        # two alternate-user-agent requests plus a full Selenium launch, all
+        # landing on secure.indeed.com/auth: 44 jobs, 132 wasted requests and
+        # zero results in one run. A login wall does not become friendlier in
+        # a browser, so retrying it is guaranteed waste.
+        #
+        # Counted per host per process, not persisted: if the block lifts the
+        # next run finds out on its own, with no state to expire.
+        if getattr(response, 'status_code', None) in (401, 403):
+            try:
+                import urllib.parse as _up
+                _host = _up.urlparse(url).netloc.lower().replace('www.', '')
+            except Exception:
+                _host = ''
+            if _host:
+                _seen = getattr(PageFetcher, '_authwall_hosts', None)
+                if _seen is None:
+                    _seen = PageFetcher._authwall_hosts = {}
+                _n = _seen.get(_host, 0) + 1
+                _seen[_host] = _n
+                if _n == 3:
+                    logging.warning(
+                        'AUTH WALL: %s returned 401/403 three times, '
+                        'skipping UA retries and Selenium for this host' % _host)
+                if _n >= 3:
+                    _HTTP_RESPONSE_CACHE[url] = {
+                        'response': None, 'final_url': None, 'page_source': None,
+                    }
+                    return None, None, None
+
         # Auto-retry with different user agents before falling back to Selenium
         if not response or response.status_code not in [404, 410]:
             for _alt_ua in USER_AGENTS[1:3]:
