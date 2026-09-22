@@ -3571,7 +3571,14 @@ class UnifiedJobAggregator:
                 title = title_hint if title_hint else "Unknown"
 
             # ── POST-GATE: PhD detection from raw title + page <title> ──
-            _raw_phd_check = (title or "") + " " + (soup.title.string if soup and soup.title else "")
+            # soup.title.string is None when <title> is empty or wraps nested
+            # tags, so guarding on soup.title alone is not enough. This raised
+            # TypeError on every zapply Workday slug, and the job was then
+            # rejected for the wrong reason. get_text handles both cases.
+            _page_title = ""
+            if soup is not None and soup.title is not None:
+                _page_title = soup.title.get_text(strip=True) or ""
+            _raw_phd_check = (title or "") + " " + _page_title
             if re.search(r"\(ph\.?d\.?\)", _raw_phd_check, re.I):
                 _co = company_hint or "Unknown"
                 self._add_discarded(_co, title, location_hint or "Unknown", "Unknown",

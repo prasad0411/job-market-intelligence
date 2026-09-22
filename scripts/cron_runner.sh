@@ -65,12 +65,48 @@ if [[ "$MODULE" == "outreach" || "$MODULE" == "scripts/send_scheduled" ]]; then
     timeout 30 bash scripts/resume_sync.sh >> "$LOG_FILE" 2>&1 || true
 fi
 START_TS=$(date +%s)
-if [[ "$MODULE" == scripts/* ]]; then
-    python3 "${MODULE}.py" >> "$LOG_FILE" 2>&1
+
+# Hard wall-clock limit per module.
+#
+# scheduler.py declares a "timeout" per job but nothing enforced it: on
+# 21 Sep the aggregator hung at 09:11 mid-fetch and ran 66,408s (18.4h)
+# before something killed it, holding the run lock the whole time and
+# skipping every scheduled slot for a full day. A stuck network call with
+# no socket timeout produces exactly that.
+#
+# timeout sends TERM, then KILL 60s later if the process ignores it.
+# Exit 124 means it was killed on time, which is logged distinctly below
+# so a hang is never mistaken for a crash.
+case "$MODULE" in
+    aggregator)                 MODULE_TIMEOUT=10800 ;;  # 3h; normal run ~30m
+    outreach)                   MODULE_TIMEOUT=3600  ;;  # 1h; normal run ~3m
+    scripts/send_scheduled)     MODULE_TIMEOUT=900   ;;
+    scripts/ats_discovery)      MODULE_TIMEOUT=1200  ;;
+    scripts/cleanup_not_applied) MODULE_TIMEOUT=600  ;;
+    *)                          MODULE_TIMEOUT=1800  ;;
+esac
+
+TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
+if [[ -z "$TIMEOUT_BIN" ]]; then
+    echo "WARNING: no timeout binary found, running unbounded" >> "$LOG_FILE"
+    if [[ "$MODULE" == scripts/* ]]; then
+        python3 "${MODULE}.py" >> "$LOG_FILE" 2>&1
+    else
+        python3 -m "$MODULE" >> "$LOG_FILE" 2>&1
+    fi
 else
-    python3 -m "$MODULE" >> "$LOG_FILE" 2>&1
+    if [[ "$MODULE" == scripts/* ]]; then
+        "$TIMEOUT_BIN" --kill-after=60 "$MODULE_TIMEOUT" \
+            python3 "${MODULE}.py" >> "$LOG_FILE" 2>&1
+    else
+        "$TIMEOUT_BIN" --kill-after=60 "$MODULE_TIMEOUT" \
+            python3 -m "$MODULE" >> "$LOG_FILE" 2>&1
+    fi
 fi
 EXIT_CODE=$?
+if [[ "$EXIT_CODE" -eq 124 || "$EXIT_CODE" -eq 137 ]]; then
+    echo "TIMEOUT: [$MODULE] exceeded ${MODULE_TIMEOUT}s and was killed" >> "$LOG_FILE"
+fi
 END_TS=$(date +%s)
 DURATION=$((END_TS - START_TS))
 echo "=== [$MODULE] finished at $(date) | exit: $EXIT_CODE | duration: ${DURATION}s ===" >> "$LOG_FILE"
