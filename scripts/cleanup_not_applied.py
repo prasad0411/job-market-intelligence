@@ -34,7 +34,19 @@ BACKUP_TRACKING_FILE = os.path.join(
 )
 BACKUP_INTERVAL_DAYS = 7
 
-EXPIRY_DAYS = 2  # Jobs older than this with no status get moved
+EXPIRY_DAYS = 3  # Jobs older than this with no status get moved
+
+# Ceiling on a single run. The previous guard refused outright above 20% of
+# the sheet, which deadlocks: with nothing ever moved the backlog grows, so it
+# stays above 20% permanently and the cleanup never runs again. 1,087 rows sat
+# eligible for weeks for exactly this reason. A cap drains the backlog a slice
+# at a time instead.
+MAX_MOVE_PER_RUN = 150
+
+# The percentage guard is kept, but only at a level that means a filtering bug
+# rather than an ordinary backlog. 60% of the sheet suddenly eligible is not a
+# backlog.
+ABSURD_FRACTION = 0.60
 
 FILES_TO_BACKUP = [
     "credentials.json",
@@ -281,10 +293,12 @@ class ManualCleanup:
         if not entry_date:
             return False
 
-        # Set current year since our date format has no year
+        # _parse_entry_date already resolves the year, rolling back to the
+        # previous one when the date would otherwise be in the future. This
+        # used to overwrite that with the current year, so a row entered
+        # 23-Dec-2025 became 23-Dec-2026, age_days went negative, and the row
+        # could never expire.
         now = datetime.datetime.now()
-        entry_date = entry_date.replace(year=now.year)
-
         age_days = (now - entry_date).days
         return age_days >= EXPIRY_DAYS
 
@@ -331,12 +345,22 @@ class ManualCleanup:
 
             if expired_rows:
                 _total = max(1, len(all_data) - 1)
-                if len(expired_rows) > 0.20 * _total:
+                if len(expired_rows) > ABSURD_FRACTION * _total:
                     print(
-                        f"ABORT: would move {len(expired_rows)} of {_total} rows "
-                        f"(>20%). Refusing to run. Investigate before cleaning."
+                        f"ABORT: {len(expired_rows)} of {_total} rows eligible "
+                        f"({100*len(expired_rows)//_total}%) - above "
+                        f"{int(ABSURD_FRACTION*100)}%, which suggests a filtering "
+                        f"bug rather than a backlog. Investigate before cleaning."
                     )
                     return
+                if len(expired_rows) > MAX_MOVE_PER_RUN:
+                    # oldest first, so the rows that have waited longest move
+                    expired_rows.sort(
+                        key=lambda r: (self._parse_entry_date(self._get_cell(r, 11))
+                                       or datetime.datetime.now()))
+                    print(f"Capped: {len(expired_rows)} eligible, moving oldest "
+                          f"{MAX_MOVE_PER_RUN}, rest next run")
+                    expired_rows = expired_rows[:MAX_MOVE_PER_RUN]
                 self._snapshot_sheet(all_data, tag="expiry")
                 if getattr(self, "_dry_run", False):
                     print(f"DRY RUN: would move {len(expired_rows)} rows, moving nothing.")
@@ -411,12 +435,21 @@ class ManualCleanup:
 
             if not_applied_rows:
                 _total = max(1, len(all_data) - 1)
-                if len(not_applied_rows) > 0.20 * _total:
+                if len(not_applied_rows) > ABSURD_FRACTION * _total:
                     print(
-                        f"ABORT: would move {len(not_applied_rows)} of {_total} rows "
-                        f"(>20%). Refusing to run. Investigate before cleaning."
+                        f"ABORT: {len(not_applied_rows)} of {_total} rows eligible "
+                        f"({100*len(not_applied_rows)//_total}%) - above "
+                        f"{int(ABSURD_FRACTION*100)}%, which suggests a filtering "
+                        f"bug rather than a backlog. Investigate before cleaning."
                     )
                     return
+                if len(not_applied_rows) > MAX_MOVE_PER_RUN:
+                    not_applied_rows.sort(
+                        key=lambda r: (self._parse_entry_date(self._get_cell(r, 11))
+                                       or datetime.datetime.now()))
+                    print(f"Capped: {len(not_applied_rows)} eligible, moving oldest "
+                          f"{MAX_MOVE_PER_RUN}, rest next run")
+                    not_applied_rows = not_applied_rows[:MAX_MOVE_PER_RUN]
                 self._snapshot_sheet(all_data, tag="notapplied")
                 if getattr(self, "_dry_run", False):
                     print(f"DRY RUN: would move {len(not_applied_rows)} rows, moving nothing.")
