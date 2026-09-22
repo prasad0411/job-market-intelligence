@@ -219,7 +219,12 @@ except Exception as e: skip("85-92 discovery", e)
 section("93-100: CLEANUP SAFETY + SHEET WRITER")
 try:
     cl = open("scripts/cleanup_not_applied.py", encoding="utf-8").read()
-    check("93. 20% cap present", "0.20 * _total" in cl, True)
+    # Was "0.20 * _total". That guard refused outright above 20% of the
+    # sheet, which deadlocked: nothing moved, so the backlog grew and
+    # stayed above 20% permanently. Replaced by a per-run batch cap plus
+    # an abort only at a level that implies a filtering bug.
+    check("93. batch cap present", "MAX_MOVE_PER_RUN" in cl, True)
+    check("93b. absurd-fraction guard present", "ABSURD_FRACTION" in cl, True)
     check("94. snapshot before move", "_snapshot_sheet" in cl, True)
     check("95. dry-run supported", "_dry_run" in cl, True)
     check("96. keeps status-or-url rows", "self._get_cell(row, 5).strip()" in cl, True)

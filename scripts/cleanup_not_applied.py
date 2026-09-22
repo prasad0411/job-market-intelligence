@@ -408,7 +408,9 @@ class ManualCleanup:
                 print("No jobs to clean")
                 return
 
-            # Only move "Not Applied" jobs older than 48 hours
+            # Only move "Not Applied" jobs older than EXPIRY_DAYS.
+            # This was hardcoded to 48 hours while the expiry pass used
+            # EXPIRY_DAYS, so the two passes archived on different windows.
             now = datetime.datetime.now()
             not_applied_rows = []
             for row in all_data[1:]:
@@ -420,10 +422,10 @@ class ManualCleanup:
                     continue  # Skip rows with no parseable date
                 entry_date = entry_date.replace(year=now.year)
                 age_hours = (now - entry_date).total_seconds() / 3600
-                if age_hours >= 48:
+                if age_hours >= EXPIRY_DAYS * 24:
                     not_applied_rows.append(row)
-                # Jobs < 48 hours old are kept in Valid Entries
-            # Keep: all non-"Not Applied" rows + fresh "Not Applied" rows (< 48 hours)
+                # Newer jobs stay in Valid Entries
+            # Keep: all non-"Not Applied" rows + "Not Applied" rows newer than EXPIRY_DAYS
             moved_set = set(id(row) for row in not_applied_rows)
             # Keep any row not being moved that has real data (status OR url),
             # never rely on Sr. No. (col 0) which can be blank after renumbering.
