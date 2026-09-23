@@ -231,6 +231,71 @@ def _kw_any(keywords, text):
     return any(rx.search(t) for _, rx in _kw_patterns(keywords))
 
 
+
+# ── seniority level ──────────────────────────────────────────────────────────
+# Level 3 and above generally means several years of experience. The filter
+# only treats a number as a level when it directly follows a role word and is
+# not a duration, a year, or a technology - "Software Developer - 4 Months" is
+# a co-op posting, not a level 4 role.
+
+_LEVEL_MAX = 2
+
+_LEVEL_ROLE = (r"(?:engineer|engineering|developer|dev|swe|sde|scientist|"
+               r"analyst|architect|programmer|specialist|consultant|"
+               r"administrator)")
+
+_LEVEL_NOT_AFTER = (r"(?:month|months|mo|week|weeks|wk|year|years|yr|yrs|"
+                    r"shift|hour|hours|hrs|day|days|g\b|nm\b)")
+
+_ROMAN_VALUES = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6,
+                 "vii": 7, "viii": 8, "ix": 9, "x": 10}
+
+# An intern or co-op posting is not a senior role regardless of any number.
+_EARLY_CAREER_RE = re.compile(
+    r"\b(intern|internship|co-?op|new\s*grad|newgrad|graduate\s+program|"
+    r"campus|entry[\s-]?level|apprentice|trainee|university)\b", re.I)
+
+_LEVEL_DIGIT_RE = re.compile(
+    r"\b%s\b[\s,\-\u2013\u2014]*(\d{1,2})(?![\d])(?!\s*%s)"
+    % (_LEVEL_ROLE, _LEVEL_NOT_AFTER), re.I)
+
+_LEVEL_ROMAN_RE = re.compile(
+    r"\b%s\b[\s,\-\u2013\u2014]*((?:i{1,3}|iv|vi{0,3}|ix|x))\b"
+    % _LEVEL_ROLE, re.I)
+
+# L5, IC4, E4, T5, P3 - standalone tokens only
+_LEVEL_LADDER_RE = re.compile(r"\b(?:l|ic|e|t|p)(\d{1,2})\b", re.I)
+
+
+def _detect_seniority_level(title):
+    """Highest level found in the title, or None."""
+    t = (title or "").strip()
+    if not t:
+        return None
+    levels = []
+    for _m in _LEVEL_DIGIT_RE.finditer(t):
+        _n = int(_m.group(1))
+        if 1 <= _n <= 12:
+            levels.append(_n)
+    for _m in _LEVEL_ROMAN_RE.finditer(t):
+        _n = _ROMAN_VALUES.get(_m.group(1).lower())
+        if _n:
+            levels.append(_n)
+    for _m in _LEVEL_LADDER_RE.finditer(t):
+        _n = int(_m.group(1))
+        if 1 <= _n <= 12:
+            levels.append(_n)
+    return max(levels) if levels else None
+
+
+def _is_too_senior(title, max_level=_LEVEL_MAX):
+    """True when the title carries a level above max_level."""
+    if _EARLY_CAREER_RE.search(title or ""):
+        return False
+    _lvl = _detect_seniority_level(title)
+    return _lvl is not None and _lvl > max_level
+
+
 class TitleProcessor:
     @staticmethod
     @lru_cache(maxsize=512)
@@ -730,6 +795,14 @@ class TitleProcessor:
     @lru_cache(maxsize=256)
     def is_cs_engineering_role(title, description=""):
         title_lower = title.lower()
+
+        # Seniority runs first, above the guaranteed-phrase shortcut below.
+        # "Software Engineer III" matches the guaranteed phrase "software
+        # engineer" and returned True before ever reaching this check, so
+        # level 3+ postings kept arriving despite the gate existing.
+        # Seniority disqualifies regardless of how technical the role is.
+        if _is_too_senior(title):
+            return False
 
         try:
             from aggregator.config import GUARANTEED_TECHNICAL_PHRASES
