@@ -2250,6 +2250,12 @@ TECHNICAL_ROLE_KEYWORDS = {
     # Developer" still passes on "developer", while consultant and
     # administrator titles are caught by NON_TECHNICAL_PURE.
     "salesforce",
+    # "2027 Quantum Applied Science Internship" at Amazon scored zero:
+    # neither term was in the set, though research scientist and
+    # computational already were.
+    "quantum",
+    "applied science",
+
     "tech",
 
     "software",

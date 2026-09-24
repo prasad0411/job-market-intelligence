@@ -320,6 +320,11 @@ _HARD_NT_RESCUE = (
     r"\bdata\s+(?:engineer|scien)", r"\bmachine\s+learning\b",
     r"\bsite\s+reliability\b", r"\bsre\b", r"\bcomputer\s+scien",
     r"\bembedded\b", r"\bfirmware\b", r"\bprogrammer\b", r"\barchitect\b",
+    # "Data Analyst, Credit Risk" is a data analyst role; credit risk is the
+    # domain it sits in, not the job. Same for "Collections Data Analyst".
+    # Without this the hard gate fires before the scoring ever sees tech=3.
+    r"\bdata\s+analyst\b", r"\bbusiness\s+intelligence\b",
+    r"\banalytics\s+engineer\b", r"\bquantum\b",
 )
 
 _HARD_NT_RE = [re.compile(r"(?<![a-z])%s" % re.escape(_w), re.I)
