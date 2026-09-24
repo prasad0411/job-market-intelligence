@@ -277,7 +277,10 @@ def check_orphaned_modules():
              "medallion", "medallion_dag",
              # Imported by aggregator/__main__.py and outreach/__main__.py
              # inside a try block, which the import graph does not follow.
-             "resilience"}
+             "resilience",
+             # Invoked by cron_runner.sh as a subprocess after every
+             # run, so no Python module imports it.
+             "alert"}
 
     mods, imports = {}, {}
     for p in _iter_py():

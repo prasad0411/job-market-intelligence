@@ -119,6 +119,22 @@ cat > "$HEALTH_FILE" <<EOF
   "log": "$LOG_FILE"
 }
 EOF
+
+# ── failure notification ────────────────────────────────────────────────────
+# cron_runner already has the exit code, duration and log path; until now it
+# kept them to itself. Two multi-hour hangs this week were visible in these
+# logs for hours with nobody told.
+#
+# alert.py decides whether to actually send: it classifies the failure,
+# throttles repeats to one per module per kind per 6h, and sends a single
+# recovery notice so silence means healthy rather than ambiguous. It always
+# exits 0, and is wrapped here as well, because a problem with alerting must
+# never change the status of the run being reported.
+if [[ -f "$BASE_DIR/scripts/alert.py" ]]; then
+    ( cd "$BASE_DIR" && python3 scripts/alert.py \
+        "$MODULE" "$EXIT_CODE" "$DURATION" "$LOG_FILE" >> "$LOG_FILE" 2>&1 ) || true
+fi
+
 if [[ $EXIT_CODE -ne 0 ]]; then
     echo "[$(date)] FAILED: $MODULE (exit $EXIT_CODE) — $LOG_FILE" >> "$BASE_DIR/.local/failures.log"
 fi
