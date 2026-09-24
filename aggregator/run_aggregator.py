@@ -1121,11 +1121,30 @@ class UnifiedJobAggregator:
         """Selenium health check with auto-repair and Brain tracking."""
         from outreach.brain import Brain
         b = Brain.get()
+        # Hard cap on the probe. This is the first network call of the run and
+        # it used to have no timeout: on 24 Sep the aggregator stopped here
+        # and logged nothing for 3.8 hours. A thread with a join deadline
+        # bounds it even if the underlying socket ignores its own timeout.
+        def _probe():
+            try:
+                from aggregator.extractors import PageFetcher as _PF
+                resp, _, _ = _PF().fetch_page(
+                    "https://www.google.com", force_requests=True)
+                _probe.ok = bool(resp)
+            except Exception:
+                _probe.ok = False
+
+        _probe.ok = False
         try:
-            from aggregator.extractors import PageFetcher as _PF
-            _pf = _PF()
-            resp, _, _ = _pf.fetch_page("https://www.google.com", force_requests=True)
-            if resp:
+            import threading as _th
+            _t = _th.Thread(target=_probe, daemon=True)
+            _t.start()
+            _t.join(timeout=30)
+            if _t.is_alive():
+                logging.warning(
+                    "Selenium health check: probe still running after 30s, "
+                    "abandoning it and continuing")
+            elif _probe.ok:
                 logging.info("Selenium health check: OK (requests mode)")
                 b.record_selenium_ok()
                 return

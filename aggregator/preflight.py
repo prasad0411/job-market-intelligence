@@ -274,7 +274,10 @@ def check_orphaned_modules():
              # (python3 -m data_platform.medallion), medallion_dag is loaded by
              # the Airflow scheduler. transforms is reachable through
              # medallion, so the graph walk picks it up from here.
-             "medallion", "medallion_dag"}
+             "medallion", "medallion_dag",
+             # Imported by aggregator/__main__.py and outreach/__main__.py
+             # inside a try block, which the import graph does not follow.
+             "resilience"}
 
     mods, imports = {}, {}
     for p in _iter_py():
