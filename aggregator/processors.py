@@ -296,6 +296,47 @@ def _is_too_senior(title, max_level=_LEVEL_MAX):
     return _lvl is not None and _lvl > max_level
 
 
+
+# ── hard non-technical qualifiers ────────────────────────────────────────────
+# Words that settle the question on their own. Kept apart from
+# NON_TECHNICAL_PURE, which holds softer terms like "business" and "sales"
+# that appear in genuine tech titles and so must not win a tie.
+
+_HARD_NT_QUALIFIERS = (
+    "underwriting", "actuarial", "credit risk", "financial analyst",
+    "finance analyst", "investment analyst", "treasury", "tax analyst",
+    "payroll", "benefits analyst", "procurement", "claims adjuster",
+    "claims representative", "policy analyst", "budget analyst",
+    "billing analyst", "collections", "hcm", "basis administrator",
+    "loan officer", "branch manager", "teller", "bookkeep",
+)
+
+# A software signal overrides the qualifier. A payroll company still hires
+# engineers, and "Payroll Systems Engineer" is one of them.
+_HARD_NT_RESCUE = (
+    r"\bsoftware\b", r"\bengineer\b", r"\bengineering\b", r"\bdeveloper\b",
+    r"\bsde\b", r"\bswe\b", r"\bbackend\b", r"\bfrontend\b",
+    r"\bfull[\s-]?stack\b", r"\bdevops\b", r"\bplatform\s+engineer",
+    r"\bdata\s+(?:engineer|scien)", r"\bmachine\s+learning\b",
+    r"\bsite\s+reliability\b", r"\bsre\b", r"\bcomputer\s+scien",
+    r"\bembedded\b", r"\bfirmware\b", r"\bprogrammer\b", r"\barchitect\b",
+)
+
+_HARD_NT_RE = [re.compile(r"(?<![a-z])%s" % re.escape(_w), re.I)
+               for _w in _HARD_NT_QUALIFIERS]
+_HARD_NT_RESCUE_RE = [re.compile(_p, re.I) for _p in _HARD_NT_RESCUE]
+
+
+def _is_hard_non_technical(title):
+    """True when the title is unambiguously a non-technical business role."""
+    _t = (title or "").strip()
+    if not _t:
+        return False
+    if any(_r.search(_t) for _r in _HARD_NT_RESCUE_RE):
+        return False
+    return any(_h.search(_t) for _h in _HARD_NT_RE)
+
+
 class TitleProcessor:
     @staticmethod
     @lru_cache(maxsize=512)
@@ -802,6 +843,13 @@ class TitleProcessor:
         # level 3+ postings kept arriving despite the gate existing.
         # Seniority disqualifies regardless of how technical the role is.
         if _is_too_senior(title):
+            return False
+
+        # Unambiguous business roles. "analyst" is a technical keyword, so
+        # "Credit Risk Analyst" ties 1-1 against the scoring below and the
+        # relaxed tie-break keeps it. These qualifiers settle it earlier,
+        # unless a software signal in the title rescues the role.
+        if _is_hard_non_technical(title):
             return False
 
         try:

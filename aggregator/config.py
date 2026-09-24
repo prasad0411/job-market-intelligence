@@ -2244,10 +2244,12 @@ TECHNICAL_ROLE_KEYWORDS = {
     "infrastructure",
     "technology",
     "technical",
+    # servicenow, sap and workday removed: they pulled in ERP functional
+    # roles - "Workday HCM Consultant", "SAP Basis Administrator" - 26 of
+    # them in one two-day batch. Without the platform name, "ServiceNow
+    # Developer" still passes on "developer", while consultant and
+    # administrator titles are caught by NON_TECHNICAL_PURE.
     "salesforce",
-    "servicenow",
-    "sap",
-    "workday",
     "tech",
 
     "software",
@@ -2460,6 +2462,32 @@ TECHNICAL_PATTERNS = [
 ]
 
 NON_TECHNICAL_PURE = {
+    # Qualifiers that make an "analyst" title non-technical. Bare "analyst"
+    # is a technical keyword because Data Analyst and Product Analyst are
+    # roles worth having, but it scores identically for Credit Risk Analyst
+    # and Workday HCM Analyst. These give the scoring something to weigh
+    # against, rather than dropping "analyst" and losing the good ones.
+    "underwriting",
+    "actuarial",
+    "credit risk",
+    "financial analyst",
+    "finance analyst",
+    "investment",
+    "treasury",
+    "tax analyst",
+    "hcm",
+    "erp",
+    "basis administrator",
+    "payroll",
+    "benefits",
+    "procurement",
+    "claims",
+    "compliance analyst",
+    "policy analyst",
+    "budget",
+    "billing",
+    "collections",
+
     "supply chain",
     "supply chain management",
     "product management",
