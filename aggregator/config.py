@@ -2194,6 +2194,7 @@ INVALID_LOCATION_KEYWORDS = [
 
 DEPARTMENT_KEYWORDS = [
     "quantum",
+
     "performance",
     "analytics",
     "maintenance",
@@ -2269,6 +2270,19 @@ TECHNICAL_ROLE_KEYWORDS = {
     # computational already were.
     "quantum",
     "applied science",
+    # ML conference names. Spotify and others post research-recruiting
+    # roles titled only with the venue - "Spotify - RecSys 2026" scored
+    # zero keywords and was dropped, despite being exactly the kind of
+    # role worth seeing.
+    "recsys",
+    "colm",
+    "neurips",
+    "icml",
+    "iclr",
+    "kdd",
+    "cvpr",
+    "acl 20",
+    "emnlp",
 
     "tech",
 

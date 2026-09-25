@@ -397,6 +397,10 @@ _HW_RESCUE = (
     # Engineering" lost to "product engineering" - both applied to.
     r"(?<![a-z])ai(?![a-z])", r"\bai/ml\b", r"\bartificial\s+intelligence\b",
     r"\bml\b", r"\bdeep\s+learning\b", r"\bnlp\b",
+    # "Software Test & Validation Engineer" says software in the title and was
+    # still caught by "validation engineer". A bare \bsoftware\b is safe here:
+    # no hardware discipline in the list above is described as software.
+    r"\bsoftware\b", r"\bqa\b", r"\bsdet\b",
 )
 
 _HW_RE = [re.compile(r"(?<![a-z])%s" % re.escape(_w), re.I)
