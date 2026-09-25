@@ -342,6 +342,78 @@ def _is_hard_non_technical(title):
     return any(_h.search(_t) for _h in _HARD_NT_RE)
 
 
+
+# ── hardware and non-software engineering ────────────────────────────────────
+# "engineer" is a technical keyword, so Thermal Engineer and Resident Paint
+# Engineer pass the CS gate. These are real engineering, just not software.
+#
+# Deliberately separate from _is_hard_non_technical: that gate rescues on a
+# bare \bengineer\b, which every discipline below would satisfy.
+
+_HW_DISCIPLINES = (
+    # thermal, mechanical, materials, civil
+    "thermal engineer", "paint engineer", "mechanical engineer",
+    "materials engineer", "structural engineer", "civil engineer",
+    "chemical engineer", "industrial engineer", "manufacturing engineer",
+    "packaging engineer", "project engineer", "facilities engineer",
+    "maintenance engineer",
+    # semiconductor and fab
+    "process integration", "process engineer", "dram", "wafer",
+    "lithography", "photonics", "physical design", "yield engineer",
+    "failure analysis", "device engineer", "product engineering",
+    "silicon validation", "validation engineer", "soc power",
+    # RF, analog, power
+    "rfic", "gan ", "power amplifier", "power ip", "analog design",
+    "rf engineer", "rf design", "antenna", "signal integrity",
+    "signal processing", "radar", "power electronics",
+    "electrical engineer", "electronic engineer",
+    # plant-floor controls and automation, not robotics software
+    "controls engineer", "control systems engineer", "plc",
+    "automation execution", "material handling", "instrumentation",
+    # field, presales, support engineering
+    "field engineering", "field engineer", "field application",
+    "application engineer", "sales engineer", "presales",
+    "technical support engineer",
+    # life sciences and clinical
+    "certified coder", "medical coder", "clinical investigator",
+    "microbiologist", "chemist", "chemistry", "biolog", "pharmacolog",
+    "immunolog", "toxicolog", "medicinal", "v&v engineering",
+    # audit, and the two terms banned by request
+    "audit intern", "consultant", ".net", "dotnet",
+)
+
+# Narrow by design. A bare "engineer" would rescue every discipline above.
+_HW_RESCUE = (
+    r"\bsoftware\s+engineer", r"\bsoftware\s+develop", r"\bsde\b", r"\bswe\b",
+    r"\bbackend\b", r"\bfront[\s-]?end\b", r"\bfull[\s-]?stack\b",
+    r"\bdevops\b", r"\bdata\s+engineer", r"\bdata\s+scien",
+    r"\bmachine\s+learning\b", r"\bsite\s+reliability\b", r"\bsre\b",
+    r"\bcomputer\s+scien", r"\bembedded\s+software\b", r"\bfirmware\b",
+    r"\bweb\s+develop", r"\bapi\b", r"\bcloud\s+engineer",
+    r"\bplatform\s+engineer", r"\bapplied\s+scien", r"\bcompiler\b",
+    r"\bdistributed\s+systems\b", r"\bsoftware\s+quality\b",
+    # An AI/ML role is software whatever domain it sits in. Without these,
+    # "AI/ML Computational Toxicology" lost to "toxicolog" and "AI Product
+    # Engineering" lost to "product engineering" - both applied to.
+    r"(?<![a-z])ai(?![a-z])", r"\bai/ml\b", r"\bartificial\s+intelligence\b",
+    r"\bml\b", r"\bdeep\s+learning\b", r"\bnlp\b",
+)
+
+_HW_RE = [re.compile(r"(?<![a-z])%s" % re.escape(_w), re.I)
+          for _w in _HW_DISCIPLINES]
+_HW_RESCUE_RE = [re.compile(_p, re.I) for _p in _HW_RESCUE]
+
+
+def _is_hardware_discipline(title):
+    """True for engineering that is not software engineering."""
+    _t = (title or "").strip()
+    if not _t:
+        return False
+    if any(_r.search(_t) for _r in _HW_RESCUE_RE):
+        return False
+    return any(_d.search(_t) for _d in _HW_RE)
+
+
 class TitleProcessor:
     @staticmethod
     @lru_cache(maxsize=512)
@@ -855,6 +927,12 @@ class TitleProcessor:
         # relaxed tie-break keeps it. These qualifiers settle it earlier,
         # unless a software signal in the title rescues the role.
         if _is_hard_non_technical(title):
+            return False
+
+        # Engineering that is not software engineering. Thermal, RF, process
+        # integration, controls, field and clinical roles all carry
+        # "engineer" and so passed every check above.
+        if _is_hardware_discipline(title):
             return False
 
         try:

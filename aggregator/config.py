@@ -502,6 +502,20 @@ ASSOCIATE_BACHELOR_ONLY_PATTERNS = [
 ]
 
 CPT_OPT_EXCLUSION_PATTERNS = [
+    # "Applicants must be authorized to work in the U.S. without the need
+    #  for employment-based visa sponsorship now or in the future ... (no
+    #  sponsorship is available for H-1B, L-1, TN, O-1, E-3, H-1B1, F-1,
+    #  J-1, OPT, CPT or any other employment-based visa)"
+    # Narrower than the broad pattern removed below: this names OPT and CPT
+    # outright, so it blocks an F-1 internship rather than only H-1B.
+    r"authorized\s+to\s+work.{0,60}without\s+the\s+need\s+for.{0,60}sponsor",
+    r"no\s+sponsorship\s+is\s+available.{0,160}(?:opt|cpt)",
+    # "Legal authorization to work in the U.S. indefinitely is required.
+    #  Employer work permit sponsorship is not available for this position"
+    # "indefinitely" is the operative word: F-1 OPT is time-limited, so this
+    # excludes the candidate even where a CPT internship would not.
+    r"authorization\s+to\s+work.{0,40}indefinitely\s+is\s+required",
+    r"work\s+permit\s+sponsorship\s+is\s+not\s+available",
     r"will\s+not\s+(?:provide|offer|support|sign).{0,80}(?:cpt|opt|curricular\s+practical|optional\s+practical)",
     r"(?:does\s+not|doesn't|cannot)\s+(?:support|provide|sponsor).{0,80}(?:cpt|opt)",
     r"(?:\bcpt\b|\bopt\b|curricular\s+practical|optional\s+practical).{0,80}(?:not|n't|cannot).{0,50}(?:support|provide|available|offered)",
