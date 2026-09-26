@@ -4,6 +4,10 @@ Pipeline Health Heartbeat — runs after every aggregator cycle.
 Checks 6 health signals and logs/alerts on failures.
 Designed to catch silent bugs within hours, not days.
 """
+
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
 import os
 import re
 import json

@@ -7,6 +7,10 @@ and logs everything for self-learning.
 
 Run via launchd every 30 min after send windows.
 """
+
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
 import sys, os, re, json, datetime, logging, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

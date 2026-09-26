@@ -4,6 +4,10 @@ Send scheduled outreach emails from Outlook 'Scheduled Outreach' folder.
 Drafts are created by outreach_mailer.py with X-Send-At / X-Company headers.
 Run every 15 min via launchd — zero manual intervention needed.
 """
+
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
 import sys, os, datetime, time, logging, json, re
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

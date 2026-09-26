@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """Nightly digest — sends run summary to prasadckanade@gmail.com"""
+
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
 import sys, os, datetime, json, logging, re, sqlite3
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

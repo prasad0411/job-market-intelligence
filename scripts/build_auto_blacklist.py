@@ -12,6 +12,10 @@ Dry run (see what would be added without changing anything):
     python3 scripts/build_auto_blacklist.py --dry-run
 """
 
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
+
 import sys, os, re, json
 from collections import defaultdict
 

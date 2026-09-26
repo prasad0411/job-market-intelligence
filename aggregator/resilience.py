@@ -82,24 +82,19 @@ def _install_signal_handlers():
 
 
 def _install_child_reaper():
-    """Kill the whole process group on exit.
+    """Disabled.
 
-    Chrome, chromedriver and subprocess helpers outlive a killed parent and
-    hold pipes open, which is part of why the wrapper could not finish.
+    This used to call os.killpg(getpgid(0), SIGTERM) from an atexit handler,
+    to clean up orphaned chromedriver and subprocess helpers. Once the
+    scripts/ modules began importing resilience, that handler started killing
+    the entire process group on every exit - including pytest's own shell
+    pipeline, and in production it could take down the scheduler's group.
+
+    The direct child is already handled: cron_runner wraps each module in
+    `timeout --kill-after=60`. Orphaned browsers are better dealt with by the
+    driver.quit() calls at their own call sites, where the scope is known.
     """
-    def _reap():
-        try:
-            pgid = os.getpgid(0)
-            if pgid == os.getpid():          # only if we lead the group
-                signal.signal(signal.SIGTERM, signal.SIG_IGN)
-                os.killpg(pgid, signal.SIGTERM)
-        except Exception as e:
-            # Runs during interpreter shutdown, where logging and even stderr
-            # may already be torn down. os.write to fd 2 is the lowest-level
-            # option available and needs no live file object.
-            with contextlib.suppress(Exception):
-                os.write(2, ("child reaper failed: %s\n" % e).encode())
-    atexit.register(_reap)
+    return False
 
 
 def _install_watchdog():
@@ -138,8 +133,7 @@ def install(watchdog=True, reaper=True):
     except Exception:
         out["faulthandler"] = False
     if reaper:
-        _install_child_reaper()
-        out["child_reaper"] = True
+        out["child_reaper"] = _install_child_reaper()   # disabled, returns False
     if watchdog:
         _install_watchdog()
         out["watchdog"] = "%ds stall threshold" % WATCHDOG_STALL_SECONDS

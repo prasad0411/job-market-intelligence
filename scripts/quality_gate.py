@@ -18,6 +18,10 @@ What it checks:
 Writes all corrections to brain.json so pipeline gets smarter.
 """
 
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
+
 import gspread
 import json
 import logging

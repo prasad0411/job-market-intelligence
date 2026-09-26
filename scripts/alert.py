@@ -91,12 +91,54 @@ def should_alert(module, kind, now=None, state=None, quiet_hours=QUIET_HOURS):
 
 # ── classification ──────────────────────────────────────────────────────────
 
+# Markers that mean the run failed whatever it returned. A script that
+# catches its own exception and exits 0 is the most dangerous kind of
+# failure: every layer above it sees success.
+_FAILURE_MARKERS = (
+    r"^\u2717 .*error",
+    r"^Traceback \(most recent call last\)",
+    r"ConnectionResetError",
+    r"MISMATCH:",
+    r"ABORT:",
+)
+_MARK_RE = [re.compile(_p, re.M | re.I) for _p in _FAILURE_MARKERS]
+
+# Work announced but never confirmed - "Moving 150 jobs" with no
+# "Moved 150 jobs" means the move died partway.
+_ANNOUNCED_RE = re.compile(r"^Moving (\d+) jobs", re.M)
+_CONFIRMED_RE = re.compile(r"^\u2713 Moved (\d+) jobs", re.M)
+
+
+def has_failure_markers(log_text):
+    return [p.pattern for p in _MARK_RE if p.search(log_text or "")]
+
+
+def incomplete_work(log_text):
+    t = log_text or ""
+    a = sum(int(m) for m in _ANNOUNCED_RE.findall(t))
+    c = sum(int(m) for m in _CONFIRMED_RE.findall(t))
+    return (a, c) if a and a != c else (0, 0)
+
+
 def classify(module, exit_code, duration, log_text):
-    """Short failure class, or 'recovered' when the run was clean."""
+    """Short failure class, or 'recovered' when the run was genuinely clean.
+
+    The log is evidence, not just the exit code. On 26 Sep the cleanup logged
+    two ConnectionResetErrors, left 150 rows duplicated across two sheets,
+    and exited 0 - and was reported as recovered.
+    """
+    log_text = log_text or ""
     if exit_code in (124, 137):
         return "timeout"
     if "WATCHDOG: no progress" in log_text:
         return "stalled"
+
+    # Before the exit code, because a swallowed exception still returns 0.
+    if has_failure_markers(log_text):
+        return "silent_error"
+    if incomplete_work(log_text)[0]:
+        return "partial_work"
+
     if exit_code == 0:
         if "finished at" not in log_text:
             return "no_finish"

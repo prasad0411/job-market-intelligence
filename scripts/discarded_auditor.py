@@ -12,6 +12,10 @@ Intelligence layers:
 6. SELF-AUDIT — checks its own rescue accuracy over time
 """
 
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
+
 import gspread
 import json
 import logging

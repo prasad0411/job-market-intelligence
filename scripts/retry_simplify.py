@@ -4,6 +4,10 @@ Retry failed Simplify URLs using Brain's intelligent retry queue.
 Run 3x/day via launchd. Processes only entries whose next_retry_at has passed.
     python3 scripts/retry_simplify.py
 """
+
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
 import sys, os, logging
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO, format="%(message)s")

@@ -13,6 +13,10 @@ How it works:
 The system gets bigger every single day without human intervention.
 """
 
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
+
 import json
 import logging
 import os

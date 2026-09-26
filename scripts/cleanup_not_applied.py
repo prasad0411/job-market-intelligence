@@ -6,6 +6,10 @@ ENHANCED: Includes automatic 7-day backup to private GitHub repo.
 ENHANCED: Moves expired jobs (blank status, 3+ days old) to Reviewed sheet.
 """
 
+# Socket ceiling, signal handling, child reaping, stall watchdog.
+import scripts._resilient  # noqa: F401
+
+
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import datetime
