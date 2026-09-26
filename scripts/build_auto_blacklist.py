@@ -12,8 +12,14 @@ Dry run (see what would be added without changing anything):
     python3 scripts/build_auto_blacklist.py --dry-run
 """
 
-# Socket ceiling, signal handling, child reaping, stall watchdog.
-import scripts._resilient  # noqa: F401
+# Socket ceiling, signal handling, stall watchdog. The repo root has to
+# go on sys.path first: these run as `python3 scripts/NAME.py`, so
+# Python puts scripts/ on the path, not the root, and a plain
+# `import scripts._resilient` raises ModuleNotFoundError.
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import scripts._resilient  # noqa: E402,F401
 
 
 import sys, os, re, json

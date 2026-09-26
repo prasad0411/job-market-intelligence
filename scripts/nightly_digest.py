@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Nightly digest — sends run summary to prasadckanade@gmail.com"""
 
-# Socket ceiling, signal handling, child reaping, stall watchdog.
-import scripts._resilient  # noqa: F401
+# Socket ceiling, signal handling, stall watchdog. The repo root has to
+# go on sys.path first: these run as `python3 scripts/NAME.py`, so
+# Python puts scripts/ on the path, not the root, and a plain
+# `import scripts._resilient` raises ModuleNotFoundError.
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import scripts._resilient  # noqa: E402,F401
 
 import sys, os, datetime, json, logging, re, sqlite3
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

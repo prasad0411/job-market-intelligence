@@ -8,8 +8,14 @@ and logs everything for self-learning.
 Run via launchd every 30 min after send windows.
 """
 
-# Socket ceiling, signal handling, child reaping, stall watchdog.
-import scripts._resilient  # noqa: F401
+# Socket ceiling, signal handling, stall watchdog. The repo root has to
+# go on sys.path first: these run as `python3 scripts/NAME.py`, so
+# Python puts scripts/ on the path, not the root, and a plain
+# `import scripts._resilient` raises ModuleNotFoundError.
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import scripts._resilient  # noqa: E402,F401
 
 import sys, os, re, json, datetime, logging, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
