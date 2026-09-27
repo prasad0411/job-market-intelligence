@@ -51,6 +51,12 @@ EXPIRY_DAYS = 3  # Jobs older than this with no status get moved
 # stays above 20% permanently and the cleanup never runs again. 1,087 rows sat
 # eligible for weeks for exactly this reason. A cap drains the backlog a slice
 # at a time instead.
+# Set when a pass catches an exception. Both handlers below swallowed their
+# error and the script still exited 0, so a half-finished move looked
+# identical to a clean one: on 26 Sep it appended 150 rows to Reviewed,
+# failed to remove them from Valid Entries, and reported success.
+_RUN_FAILED = []
+
 MAX_MOVE_PER_RUN = 150
 
 # The percentage guard is kept, but only at a level that means a filtering bug
@@ -402,6 +408,7 @@ class ManualCleanup:
 
         except Exception as e:
             print(f"✗ Expiry cleanup error: {e}")
+            _RUN_FAILED.append("expiry: %s" % e)
             import traceback
 
             traceback.print_exc()
@@ -491,6 +498,7 @@ class ManualCleanup:
 
         except Exception as e:
             print(f"✗ Cleanup error: {e}")
+            _RUN_FAILED.append("cleanup: %s" % e)
 
     def _snapshot_sheet(self, all_data, tag="cleanup"):
         """Write a timestamped CSV of the sheet to .local/snapshots/ before any move."""
@@ -1192,3 +1200,16 @@ def rotate_logs():
                 pass
 
     rotate_logs()
+
+    # Report the truth upward. The alerter can infer a failure from the log,
+    # but the health file, the scheduler and anyone running this by hand all
+    # read the exit code.
+    if _RUN_FAILED:
+        print("\n" + "=" * 80)
+        print("RUN FAILED: %d pass(es) did not complete" % len(_RUN_FAILED))
+        for _f in _RUN_FAILED:
+            print("  %s" % _f)
+        print("Rows may exist in both sheets. Check the snapshot in "
+              ".local/snapshots/ before re-running.")
+        print("=" * 80)
+        _sys.exit(1)
