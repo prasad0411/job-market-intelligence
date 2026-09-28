@@ -13,10 +13,27 @@ def _sheets_retry(func):
                 return func(*args, **kwargs)
             except Exception as e:
                 msg = str(e).lower()
-                if any(x in msg for x in ("429", "quota", "rate limit", "resource exhausted", "service unavailable")):
+                # Connection resets were missing from this list, so every
+                # ConnectionResetError hit the `else: raise` below and killed
+                # the run - three aggregator failures and three cleanup
+                # failures in eight days, all on an error this was meant to
+                # absorb. aggregator.resilience.is_retryable is the single
+                # definition; this list stays only as a fallback.
+                try:
+                    from aggregator.resilience import is_retryable as _rt
+                    _should = _rt(e)
+                except Exception:
+                    _should = any(x in msg for x in (
+                        "429", "quota", "rate limit", "resource exhausted",
+                        "service unavailable", "connection reset",
+                        "connection aborted", "connection broken",
+                        "broken pipe", "timed out", "remote end closed"))
+                if _should:
                     wait = (2 ** attempt) * 5  # 5, 10, 20, 40, 80s
                     import logging
-                    logging.warning(f"Sheets quota hit, retrying in {wait}s (attempt {attempt+1}/5)")
+                    logging.warning(
+                        "Sheets call failed (%s), retrying in %ss "
+                        "(attempt %d/5)", str(e)[:70], wait, attempt + 1)
                     _time.sleep(wait)
                 else:
                     raise
@@ -84,6 +101,17 @@ class SheetsManager:
         client = gspread.authorize(creds)
         self.spreadsheet = client.open(SHEET_NAME)
         self.valid_sheet = self.spreadsheet.worksheet(WORKSHEET_NAME)
+
+        # Harden the worksheet object rather than relying on every call site
+        # remembering _retry_call. Lines 522, 605 and 687 use it; the rest do
+        # not, which is why some runs survived a reset and others did not.
+        try:
+            from aggregator.resilience import harden as _harden
+            _harden(self.valid_sheet)
+        except Exception as _he:
+            import logging as _l
+            _l.warning("valid_sheet not hardened: %s", _he)
+
         self._initialize_sheets()
         self._auto_expand_all_sheets()
 
