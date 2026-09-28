@@ -2270,6 +2270,18 @@ TECHNICAL_ROLE_KEYWORDS = {
     # computational already were.
     "quantum",
     "applied science",
+
+    # Robotics and perception roles score zero on the existing set:
+    # "2027 Internship State Estimation, Learned Mapping & Semantics"
+    # at Efficient Computer was archived for want of a matching word.
+    "state estimation",
+    "slam",
+    "localization",
+    "perception",
+    "sensor fusion",
+    "path planning",
+    "motion planning",
+    "autonomy",
     # ML conference names. Spotify and others post research-recruiting
     # roles titled only with the venue - "Spotify - RecSys 2026" scored
     # zero keywords and was dropped, despite being exactly the kind of
