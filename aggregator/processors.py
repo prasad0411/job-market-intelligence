@@ -918,6 +918,18 @@ class TitleProcessor:
     def is_cs_engineering_role(title, description=""):
         title_lower = title.lower()
 
+        # Title gates run before the guaranteed-phrase shortcut, for the same
+        # reason seniority does: "Software Engineer - C#/.NET (US Citizenship
+        # Required)" matches the guaranteed phrase "software engineer" and
+        # would return True before any of these could run.
+        try:
+            from aggregator.title_gates import rejection_reason as _gate
+            _why = _gate(title)
+            if _why:
+                return False
+        except ImportError:
+            pass
+
         # Seniority runs first, above the guaranteed-phrase shortcut below.
         # "Software Engineer III" matches the guaranteed phrase "software
         # engineer" and returned True before ever reaching this check, so

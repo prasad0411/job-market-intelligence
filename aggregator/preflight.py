@@ -280,7 +280,10 @@ def check_orphaned_modules():
              "resilience",
              # Invoked by cron_runner.sh as a subprocess after every
              # run, so no Python module imports it.
-             "alert"}
+             "alert",
+             # Imported inside a try block by processors.py, which the
+             # import-graph walk does not follow.
+             "title_gates"}
 
     mods, imports = {}, {}
     for p in _iter_py():
