@@ -138,3 +138,102 @@ def install(watchdog=True, reaper=True):
         _install_watchdog()
         out["watchdog"] = "%ds stall threshold" % WATCHDOG_STALL_SECONDS
     return out
+
+# ── retry for transient remote failures ──────────────────────────────────────
+# ConnectionResetError(54) from the Sheets API killed three cleanup runs in
+# eight days. Two retry helpers already existed elsewhere in this codebase and
+# neither was wired to the call sites that needed one; one of them also
+# returns None after a final 429, so the caller cannot tell failure from an
+# empty result.
+
+import random
+
+RETRYABLE_TYPES = (ConnectionResetError, ConnectionError,
+                   ConnectionAbortedError, TimeoutError, OSError)
+
+# Matched against str(exception), because libraries wrap the real cause.
+RETRYABLE_TEXT = (
+    "connection reset", "connection aborted", "connection broken",
+    "broken pipe", "timed out", "timeout",
+    "429", "resource_exhausted", "rate limit", "quota exceeded",
+    "500", "502", "503", "504",
+    "internal error", "backend error", "service unavailable",
+    "remote end closed", "eof occurred",
+)
+
+# Never retried: the next attempt fails the same way.
+FATAL_TEXT = (
+    "permission", "forbidden", "not found", "404", "401", "403",
+    "invalid_grant", "api key not valid", "invalid api key",
+)
+
+
+def is_retryable(exc):
+    s = str(exc).lower()
+    if any(f in s for f in FATAL_TEXT):
+        return False
+    if any(t in s for t in RETRYABLE_TEXT):
+        return True
+    return isinstance(exc, RETRYABLE_TYPES)
+
+
+def retry_call(fn, *args, attempts=4, base=2.0, cap=30.0, label=None, **kwargs):
+    """Call fn with backoff on transient failure.
+
+    Raises the last exception when attempts run out. Returning None on
+    failure is how a half-finished move looks like a successful one.
+    """
+    label = label or getattr(fn, "__name__", "call")
+    last = None
+    for i in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            last = e
+            if not is_retryable(e) or i == attempts - 1:
+                raise
+            # jitter, so concurrent workers do not retry in lockstep and
+            # re-trigger the limit they are backing off from
+            delay = min(cap, base ** (i + 1)) * (0.5 + random.random())
+            logging.warning("%s failed (%s), retry %d/%d in %.1fs",
+                            label, str(e)[:80], i + 1, attempts - 1, delay)
+            time.sleep(delay)
+    raise last
+
+
+# Read and write alike: the 26 Sep failure was a read, the 29 Aug one a write.
+WRAP_METHODS = (
+    "get_all_values", "get_all_records", "get", "row_values", "col_values",
+    "append_row", "append_rows", "update", "update_acell", "update_cell",
+    "update_cells", "batch_update", "delete_rows", "delete_row",
+    "insert_row", "insert_rows", "clear", "add_rows", "resize", "format",
+)
+
+
+def harden(obj, methods=WRAP_METHODS, **kw):
+    """Wrap an object's remote-call methods in retry_call, in place.
+
+    One call at construction beats editing every call site, and it cannot be
+    forgotten at a call site added later.
+    """
+    wrapped = []
+    for name in methods:
+        orig = getattr(obj, name, None)
+        if orig is None or not callable(orig):
+            continue
+        if getattr(orig, "_hardened", False):
+            continue
+
+        def make(fn, label):
+            def inner(*a, **k):
+                return retry_call(fn, *a, label=label, **k)
+            inner._hardened = True
+            inner.__name__ = label
+            return inner
+
+        try:
+            setattr(obj, name, make(orig, name))
+            wrapped.append(name)
+        except (AttributeError, TypeError):
+            continue          # read-only attribute on some objects
+    return wrapped

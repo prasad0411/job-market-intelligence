@@ -163,6 +163,16 @@ class ManualCleanup:
 
         self.spreadsheet = client.open(SHEET_NAME)
         self.sheet = self.spreadsheet.worksheet(WORKSHEET_NAME)
+
+        # Harden the worksheet against transient failures. ConnectionReset
+        # from the Sheets API killed this script on 21, 26 and 28 Sep; on the
+        # 26th it left 150 rows in both sheets. Wrapping the object covers
+        # every call site, including ones added later.
+        try:
+            from aggregator.resilience import harden as _harden
+            _harden(self.sheet)
+        except Exception as _he:
+            print(f"  note: sheet not hardened ({_he})")
         self._init_reviewed_sheet()
         # Load Outreach Tracker to check Extract/email status before expiring
         self._outreach_map = {}
