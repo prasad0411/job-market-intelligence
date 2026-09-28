@@ -19,6 +19,7 @@ import scripts._resilient  # noqa: E402,F401
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import datetime
+import contextlib
 import time
 import os
 import shutil
@@ -180,6 +181,11 @@ class ManualCleanup:
             from outreach.outreach_config import C, OUTREACH_TAB
             from outreach.outreach_data import _pad
             ows = self.spreadsheet.worksheet(OUTREACH_TAB)
+            # Same hardening as the main sheet: a reset here aborts the
+            # whole run before either pass starts.
+            with contextlib.suppress(Exception):
+                from aggregator.resilience import harden as _h
+                _h(ows)
             time.sleep(1)
             odata = ows.get_all_values()
             for row in odata[1:]:
@@ -201,6 +207,12 @@ class ManualCleanup:
     def _init_reviewed_sheet(self):
         try:
             self.reviewed_sheet = self.spreadsheet.worksheet(REVIEWED_WORKSHEET)
+            # On 26 Sep an append to this worksheet succeeded and the
+            # follow-up delete from Valid Entries did not, leaving 150 rows
+            # in both sheets. Retrying the append is what prevents that.
+            with contextlib.suppress(Exception):
+                from aggregator.resilience import harden as _h
+                _h(self.reviewed_sheet)
 
             current_cols = len(self.reviewed_sheet.row_values(1))
             if current_cols < 12:
@@ -222,6 +234,9 @@ class ManualCleanup:
             self.reviewed_sheet = self.spreadsheet.add_worksheet(
                 title=REVIEWED_WORKSHEET, rows=1000, cols=12
             )
+            with contextlib.suppress(Exception):
+                from aggregator.resilience import harden as _h
+                _h(self.reviewed_sheet)
             headers = [
                 "Sr. No.",
                 "Reason",
