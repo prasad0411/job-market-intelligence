@@ -1078,10 +1078,29 @@ class Finder:
         
         # Test each candidate through Reacher
         import requests
+        import time as _t
         safe_results = []
         risky_results = []
-        
+
+        # Wall-clock budget for the whole sweep.
+        #
+        # Ten candidates at a 12s timeout plus a 0.5s pause is 125s worst
+        # case, and find() runs this for several domain guesses. On 28 Sep
+        # three sweeps took 2,244s each and send_scheduled was killed at its
+        # 900s ceiling three nights running - no email went out.
+        #
+        # A responsive mail server answers in well under a second, so this
+        # only bites when the target is not answering, which is exactly when
+        # the remaining candidates will not answer either.
+        _BUDGET = 45.0
+        _deadline = _t.time() + _BUDGET
+
         for email in candidates:
+            if _t.time() > _deadline:
+                log.info("Batch Reacher: %.0fs budget spent, stopping after "
+                         "%d of %d patterns for %s",
+                         _BUDGET, candidates.index(email), len(candidates), domain)
+                break
             try:
                 resp = requests.post(
                     REACHER_URL,
