@@ -6,6 +6,15 @@ Clean bad/stale drafts from 'Scheduled Outreach'.
 Moves them to Deleted Items (recoverable), never hard-deletes.
 Dry-run by default; pass --apply to actually move.
 """
+
+# Socket ceiling, signal handling, stall watchdog. The repo root has to
+# go on sys.path first: these run as `python3 scripts/NAME.py`, so
+# Python puts scripts/ on the path, not the root.
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import scripts._resilient  # noqa: E402,F401
+
 import os, sys, json, datetime
 sys.path.insert(0, os.getcwd())
 from scripts import send_scheduled as ss

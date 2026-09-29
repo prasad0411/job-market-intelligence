@@ -285,7 +285,8 @@ def check_orphaned_modules():
              # import-graph walk does not follow.
              "title_gates",
              # Run by hand and by the scheduler; no module imports it.
-             "doctor"}
+             "doctor",
+             "verify_fixes"}
 
     mods, imports = {}, {}
     for p in _iter_py():

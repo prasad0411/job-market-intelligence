@@ -9,6 +9,15 @@ Signals that set Extract=Skip:
   - Sponsorship = No (never target)
   - Extract already set (never overwrite)
 """
+
+# Socket ceiling, signal handling, stall watchdog. The repo root has to
+# go on sys.path first: these run as `python3 scripts/NAME.py`, so
+# Python puts scripts/ on the path, not the root.
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import scripts._resilient  # noqa: E402,F401
+
 import sys, os, time, logging, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
