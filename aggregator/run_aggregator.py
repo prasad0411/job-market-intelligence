@@ -712,6 +712,36 @@ class UnifiedJobAggregator:
         except Exception:
             pass
 
+        # Release the lock on the way out, whatever happens.
+        #
+        # It was created here and never removed. The next run only clears it
+        # after 600s, but cron_runner.sh checks its own lock first and skips
+        # before Python starts - so a finished run blocked every dispatch
+        # that followed. On 28 Sep that cost twelve hours and took four
+        # modules down with it, since quality_gate and health_heartbeat only
+        # fire after an aggregator run.
+        #
+        # atexit rather than try/finally: run() is 360 lines, and re-indenting
+        # it to add a finally is a far larger change than this needs. atexit
+        # fires on normal return, on an unhandled exception, and on SIGTERM,
+        # because resilience.py installs a handler that raises SystemExit.
+        import atexit as _atexit
+
+        def _release_aggregator_lock(_p=_lock_file, _owner=os.getpid()):
+            import contextlib as _ctx
+            # Runs at interpreter shutdown, where a failure here must not mask
+            # whatever the run was already reporting.
+            with _ctx.suppress(Exception):
+                if not os.path.exists(_p):
+                    return
+                # only remove our own lock: another run may have reclaimed it
+                with open(_p) as _f:
+                    if _f.readline().strip() != str(_owner):
+                        return
+                os.remove(_p)
+
+        _atexit.register(_release_aggregator_lock)
+
         start_time = time.time()
 
         # Selenium health check — catch ChromeDriver mismatches immediately

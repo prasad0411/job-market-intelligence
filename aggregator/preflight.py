@@ -283,7 +283,9 @@ def check_orphaned_modules():
              "alert",
              # Imported inside a try block by processors.py, which the
              # import-graph walk does not follow.
-             "title_gates"}
+             "title_gates",
+             # Run by hand and by the scheduler; no module imports it.
+             "doctor"}
 
     mods, imports = {}, {}
     for p in _iter_py():
