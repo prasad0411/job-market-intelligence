@@ -448,8 +448,13 @@ class DiscardedAuditor:
             try:
                 sheet.delete_rows(r)
                 time.sleep(0.4)
-            except Exception:
-                pass
+            except Exception as _rfe:
+                # a failed delete leaves the row in both sheets
+                try:
+                    from scripts._resilient import record_failure as _rf
+                    _rf('discarded delete_rows', _rfe)
+                except Exception:
+                    pass
 
     def _delete_rows_safe(self, sheet, row_nums):
         """Delete rows with retry."""

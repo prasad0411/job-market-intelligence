@@ -241,8 +241,13 @@ class Mailer:
         """Save draft history to both file and Brain."""
         try:
             json.dump(list(self._drafts_created), open(DRAFT_HISTORY_FILE, "w"))
-        except Exception:
-            pass
+        except Exception as _rfe:
+            # losing this re-creates drafts already sent
+            try:
+                from scripts._resilient import record_failure as _rf
+                _rf('draft history write', _rfe)
+            except Exception:
+                pass
         try:
             from outreach.brain import Brain
             b = Brain.get()

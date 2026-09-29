@@ -840,7 +840,12 @@ class ManualCleanup:
                 time.sleep(1)
 
         except Exception as _e:
-            pass  # suppressed: use log.debug(_e) to investigate
+            # formatting or batch write on Valid Entries
+            try:
+                from scripts._resilient import record_failure as _rf
+                _rf('sheet batch_update', _e)
+            except Exception:
+                pass  # suppressed: use log.debug to investigate
 
     def _get_cell(self, row, index, default=""):
         try:

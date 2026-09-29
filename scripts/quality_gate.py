@@ -386,8 +386,13 @@ class QualityGate:
                     self.valid.delete_rows(r)
                     time.sleep(0.4)
                     self.deletes += 1
-                except Exception:
-                    pass
+                except Exception as _rfe:
+                    # a failed delete leaves the row in both sheets
+                    try:
+                        from scripts._resilient import record_failure as _rf
+                        _rf('quality_gate delete_rows', _rfe)
+                    except Exception:
+                        pass
 
         # Renumber if we deleted anything
         if self.deletes > 0:
