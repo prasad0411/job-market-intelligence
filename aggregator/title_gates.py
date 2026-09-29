@@ -50,8 +50,17 @@ def is_wrong_term(title):
     guessing would cost real jobs.
     """
     t = title or ""
+    # The intern check comes first, and it is not an optimisation.
+    #
+    # Graduation is May 2027, so a FULL-TIME role starting Summer 2027 is
+    # correct: it begins after the degree finishes. Only an INTERNSHIP in
+    # that term is impossible, because the candidate is no longer enrolled.
+    #
+    # A previous version dropped this guard and rejected on a dated season
+    # alone, which threw out every full-time posting advertising a summer
+    # start date.
     if not _INTERNISH.search(t):
-        return False              # full-time roles are unaffected
+        return False
     if _GOOD_TERM.search(t):
         return False              # an explicit Spring or January wins
     return bool(_BAD_TERM.search(t))

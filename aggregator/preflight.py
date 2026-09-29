@@ -286,7 +286,9 @@ def check_orphaned_modules():
              "title_gates",
              # Run by hand and by the scheduler; no module imports it.
              "doctor",
-             "verify_fixes"}
+             "verify_fixes",
+             # Run by hand; no module imports it.
+             "test_filter_properties"}
 
     mods, imports = {}, {}
     for p in _iter_py():

@@ -46,6 +46,7 @@ JOBS = [
     {"name":"discarded_auditor","module":"scripts/discarded_auditor","type":"interval","interval_hours":72,"timeout":300,"max_gap":96*3600},
     {"name":"quality_gate","module":"scripts/quality_gate","type":"post_write","timeout":180},
     {"name":"health_heartbeat","module":"scripts/health_heartbeat","type":"post_write","timeout":60},
+    {"name":"selfcheck","module":"scripts/selfcheck","type":"times","times":[(5,0)],"timeout":600,"max_gap":30*3600},
     {"name":"cleanup_not_applied","module":"scripts/cleanup_not_applied","type":"times","times":[(7,30)],"timeout":300,"max_gap":30*3600},
     {"name":"retry_simplify","module":"scripts/retry_simplify","type":"times","times":[(6,0)],"timeout":300,"max_gap":30*3600},
     {"name":"process_bounces","module":"scripts/process_bounces","type":"interval","interval":1800,"timeout":120,"max_gap":3600},

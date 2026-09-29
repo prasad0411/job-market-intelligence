@@ -2271,6 +2271,12 @@ TECHNICAL_ROLE_KEYWORDS = {
     "quantum",
     "applied science",
 
+    # "SDE Intern" and "SWE II" scored zero keywords and were rejected.
+    # Amazon posts SDE roles constantly; these are real job titles.
+    "sde",
+    "swe",
+    "sdet",
+
     # Robotics and perception roles score zero on the existing set:
     # "2027 Internship State Estimation, Learned Mapping & Semantics"
     # at Efficient Computer was archived for want of a matching word.
