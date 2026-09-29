@@ -287,7 +287,13 @@ class Finder:
                 import re as _re_pc
                 _domain_guess = _re_pc.sub(r"[^a-z0-9]", "", company.lower()) + ".com"
                 _pc_result = self.pc.get(_domain_guess)
-                if _pc_result and _pc_result.get("confidence", 0) >= 0.95:
+                # PatternCache.get returns a dict for some domains and a bare
+                # string for others. Without this check the .get below raised
+                # AttributeError on every outreach run for at least five days,
+                # swallowed each time, silently skipping the early exit.
+                if isinstance(_pc_result, str):
+                    _pc_result = {"pattern": _pc_result, "confidence": 0}
+                if isinstance(_pc_result, dict) and _pc_result.get("confidence", 0) >= 0.95:
                     log.info(f"PatternCache early exit for {company}: {_pc_result}")
             except Exception as _swx:
                 from aggregator.swallowed import swallow as _s; _s('outreach_finder.find', _swx)
