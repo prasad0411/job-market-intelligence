@@ -137,6 +137,16 @@ def install(watchdog=True, reaper=True):
     if watchdog:
         _install_watchdog()
         out["watchdog"] = "%ds stall threshold" % WATCHDOG_STALL_SECONDS
+
+    # Harden gspread here rather than per module. install() already runs in
+    # all twelve entry points, so this covers every Sheets call in the
+    # codebase without touching a single construction site.
+    try:
+        _g = harden_gspread()
+        out["gspread"] = "%d methods wrapped" % len(_g) if _g else "not installed"
+    except Exception as _ge:
+        out["gspread"] = "failed: %s" % str(_ge)[:40]
+
     return out
 
 # ── retry for transient remote failures ──────────────────────────────────────
@@ -237,3 +247,61 @@ def harden(obj, methods=WRAP_METHODS, **kw):
         except (AttributeError, TypeError):
             continue          # read-only attribute on some objects
     return wrapped
+
+# ── gspread hardening ────────────────────────────────────────────────────────
+# Eight modules opened worksheets with no retry between them. Per-object
+# hardening has to be remembered at every construction site and was not, the
+# same way _sheets_retry was written and never applied to a single method.
+# Patching the class covers every instance, including ones created later.
+
+GSPREAD_WORKSHEET_METHODS = (
+    "get_all_values", "get_all_records", "get", "row_values", "col_values",
+    "append_row", "append_rows", "update", "update_acell", "update_cell",
+    "update_cells", "batch_update", "delete_rows", "delete_row",
+    "insert_row", "insert_rows", "clear", "add_rows", "resize", "format",
+    "find", "findall", "cell", "acell",
+)
+
+GSPREAD_SPREADSHEET_METHODS = (
+    "worksheet", "worksheets", "add_worksheet", "values_update",
+    "values_get", "batch_update",
+)
+
+
+def harden_gspread():
+    """Wrap gspread's remote calls in retry_call, at class level.
+
+    Returns the list of wrapped names. Safe to call more than once: already
+    wrapped methods are skipped.
+    """
+    try:
+        import gspread
+    except ImportError:
+        return []
+
+    done = []
+    for cls_name, names in (("Worksheet", GSPREAD_WORKSHEET_METHODS),
+                            ("Spreadsheet", GSPREAD_SPREADSHEET_METHODS)):
+        cls = getattr(gspread, cls_name, None)
+        if cls is None:
+            continue
+        for n in names:
+            orig = getattr(cls, n, None)
+            if orig is None or not callable(orig):
+                continue
+            if getattr(orig, "_hardened", False):
+                continue
+
+            def make(fn, label):
+                def inner(self, *a, **k):
+                    return retry_call(fn, self, *a, label=label, **k)
+                inner._hardened = True
+                inner.__name__ = label.split(".")[-1]
+                return inner
+
+            try:
+                setattr(cls, n, make(orig, "%s.%s" % (cls_name, n)))
+                done.append("%s.%s" % (cls_name, n))
+            except (AttributeError, TypeError):
+                continue      # read-only attribute on some builds
+    return done
