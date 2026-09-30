@@ -288,7 +288,9 @@ def check_orphaned_modules():
              "doctor",
              "verify_fixes",
              # Run by hand; no module imports it.
-             "test_filter_properties"}
+             "test_filter_properties",
+             # Run daily by selfcheck; no module imports it.
+             "morning_check"}
 
     mods, imports = {}, {}
     for p in _iter_py():
