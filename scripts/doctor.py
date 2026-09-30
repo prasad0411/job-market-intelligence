@@ -33,6 +33,7 @@ import glob
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -62,7 +63,14 @@ _MARK = [re.compile(p, re.M | re.I) for p in FAILURE_MARKERS]
 _ANNOUNCED = re.compile(r"^Moving (\d+) jobs", re.M)
 _CONFIRMED = re.compile(r"^✓ Moved (\d+) jobs", re.M)
 
-OK, WARN, BAD = "ok", "WARN", "FAIL"
+# RUN is distinct from OK and FAIL: a job that is still working has no
+# finish line yet, and reporting that as a failure alerted on healthy runs.
+OK, WARN, BAD, RUN = "ok", "WARN", "FAIL", "RUN"
+
+# A running job writes to its log. The watchdog treats ten minutes of
+# silence as a stall, so twenty is long enough to survive a slow fetch and
+# short enough to notice a hang within one scheduling interval.
+STALL_MINUTES = 20
 
 
 def pid_alive(pid):
@@ -122,12 +130,33 @@ def inspect(path):
             txt = f.read()
     except Exception as e:
         return {"state": BAD, "note": "unreadable: %s" % e}
+    try:
+        _quiet_min = (time.time() - os.path.getmtime(path)) / 60.0
+    except Exception:
+        _quiet_min = 0.0
+
+    # The CLOCK line, emitted by resilience at exit, carries active and CPU
+    # time. Wall-clock duration counts suspend, so an overnight run reported
+    # 40,437s against a 10,800s ceiling while having done its work correctly.
+    _clock = re.search(
+        r"CLOCK: wall (\d+)s \| active (\d+)s \| cpu (\d+)s \| slept (\d+)s", txt)
 
     m = re.search(r"finished at .*?\| exit: (-?\d+) \| duration: (\d+)s", txt)
     if not m:
-        return {"state": BAD, "note": "no finish line - died or still running",
+        # No finish line means either "still working" or "died", and those
+        # are told apart by whether the log is still being written to.
+        if _quiet_min < STALL_MINUTES:
+            return {"state": RUN,
+                    "note": "in progress, last wrote %.0fm ago" % _quiet_min,
+                    "exit": None, "dur": None}
+        return {"state": BAD,
+                "note": "no finish line, silent %.0fm - died or hung" % _quiet_min,
                 "exit": None, "dur": None}
     code, dur = int(m.group(1)), int(m.group(2))
+    _extra = {}
+    if _clock:
+        _extra = {"wall_s": int(_clock.group(1)), "active_s": int(_clock.group(2)),
+                  "cpu_s": int(_clock.group(3)), "slept_s": int(_clock.group(4))}
 
     marks = [p.pattern for p in _MARK if p.search(txt)]
     a = sum(int(x) for x in _ANNOUNCED.findall(txt))
@@ -146,7 +175,8 @@ def inspect(path):
                 "exit": code, "dur": dur}
     if code != 0:
         return {"state": BAD, "note": "exit %d" % code, "exit": code, "dur": dur}
-    return {"state": OK, "note": "clean", "exit": code, "dur": dur}
+    return dict({"state": OK, "note": "clean", "exit": code,
+                 "dur": dur}, **_extra)
 
 
 def module_is_report(path):
@@ -226,9 +256,24 @@ def main():
             when = os.path.basename(lg).replace(".log", "").split("_", 1)[-1]
             extra = ""
             if r.get("dur") and r["dur"] > timeout:
-                extra = "  EXCEEDED %ds ceiling" % timeout
-                problems.append("%s: ran %ds against a %ds ceiling"
-                                % (mod, r["dur"], timeout))
+                # Prefer active time when the run reported it: wall-clock
+                # duration counts suspend, and this laptop suspends
+                # constantly - 805 times in three days.
+                _act = r.get("active_s")
+                _cpu = r.get("cpu_s")
+                if _act is not None and _act <= timeout:
+                    extra = "  (wall %ds, active %ds - slept)" % (r["dur"], _act)
+                else:
+                    basis = _act if _act is not None else r["dur"]
+                    stuck = (_cpu is not None and basis > 0
+                             and (_cpu / float(basis)) < 0.02)
+                    extra = "  EXCEEDED %ds ceiling%s" % (
+                        timeout, " (stuck: %ds cpu)" % _cpu if stuck else "")
+                    problems.append(
+                        "%s: %ds active against a %ds ceiling%s"
+                        % (mod, basis, timeout,
+                           " with only %ds cpu - stuck waiting" % _cpu
+                           if stuck else ""))
             print("        %-5s %-18s %-38s%s"
                   % (r["state"], when, r["note"][:38], extra))
             if r["state"] == BAD:

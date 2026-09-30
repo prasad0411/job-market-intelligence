@@ -138,6 +138,13 @@ def install(watchdog=True, reaper=True):
         _install_watchdog()
         out["watchdog"] = "%ds stall threshold" % WATCHDOG_STALL_SECONDS
 
+    # Start the run clock. Wall-clock duration counts time spent suspended,
+    # which made correct overnight runs look like ceiling violations.
+    try:
+        out["clock"] = "started" if _install_run_clock() else "already running"
+    except Exception as _ce:
+        out["clock"] = "failed: %s" % str(_ce)[:40]
+
     # Harden gspread here rather than per module. install() already runs in
     # all twelve entry points, so this covers every Sheets call in the
     # codebase without touching a single construction site.
@@ -305,3 +312,80 @@ def harden_gspread():
             except (AttributeError, TypeError):
                 continue      # read-only attribute on some builds
     return done
+
+# ── run clock ────────────────────────────────────────────────────────────────
+# The laptop suspends constantly. timeout's alarm does not fire while a
+# process is frozen, and wall-clock duration counts the suspend, so a correct
+# overnight run reported 40,437s against a 10,800s ceiling.
+#
+# time.monotonic() does not advance during suspend on macOS, so wall minus
+# monotonic is roughly the time spent asleep. CPU time separates working from
+# waiting.
+
+import resource as _resource
+
+
+def _cpu_seconds():
+    """CPU used by this process and its waited-for children."""
+    me = _resource.getrusage(_resource.RUSAGE_SELF)
+    kids = _resource.getrusage(_resource.RUSAGE_CHILDREN)
+    return me.ru_utime + me.ru_stime + kids.ru_utime + kids.ru_stime
+
+
+class RunClock:
+    def __init__(self):
+        self.wall_start = time.time()
+        self.cpu_start = _cpu_seconds()
+        self.mono_start = time.monotonic()
+
+    def snapshot(self):
+        wall = time.time() - self.wall_start
+        cpu = _cpu_seconds() - self.cpu_start
+        mono = time.monotonic() - self.mono_start
+        return {"wall_s": round(wall, 1), "cpu_s": round(cpu, 1),
+                "active_s": round(mono, 1),
+                "slept_s": round(max(0.0, wall - mono), 1)}
+
+    def line(self):
+        s = self.snapshot()
+        return ("CLOCK: wall %.0fs | active %.0fs | cpu %.0fs | slept %.0fs"
+                % (s["wall_s"], s["active_s"], s["cpu_s"], s["slept_s"]))
+
+
+_run_clock = [None]
+
+
+def _install_run_clock():
+    """Start the clock and log one line at exit, for doctor.py to read."""
+    if _run_clock[0] is not None:
+        return False
+    _run_clock[0] = RunClock()
+
+    def _emit(_done=[False]):
+        # Emit once, to fd 1 only. logging handlers are torn down before
+        # atexit runs, so logging.info here wrote a raw "Message: ..." error
+        # to stderr, and writing to both duplicated the line in the log.
+        if _done[0]:
+            return
+        _done[0] = True
+        with contextlib.suppress(Exception):
+            os.write(1, (_run_clock[0].line() + "\n").encode())
+
+    atexit.register(_emit)
+    return True
+
+
+def classify_duration(wall_s, cpu_s, active_s, ceiling_s):
+    """Was this run over budget, or just suspended? Returns (over, reason)."""
+    basis = active_s if active_s is not None else wall_s
+    if basis <= ceiling_s:
+        if wall_s > ceiling_s:
+            return False, ("wall %.0fs exceeded the %.0fs ceiling but active "
+                           "time was %.0fs - the machine slept"
+                           % (wall_s, ceiling_s, basis))
+        return False, "within budget"
+    if cpu_s is not None and basis > 0 and (cpu_s / basis) < 0.02:
+        return True, ("active %.0fs over the %.0fs ceiling with only %.0fs cpu "
+                      "- stuck waiting, not working" % (basis, ceiling_s, cpu_s))
+    return True, ("active %.0fs over the %.0fs ceiling, cpu %.0fs"
+                  % (basis, ceiling_s, cpu_s if cpu_s is not None else -1))
