@@ -421,9 +421,22 @@ class DiscardedAuditor:
             job_id = row_data[6] if len(row_data) > 6 else "N/A"
             job_type = row_data[7] if len(row_data) > 7 else "Internship"
             location = row_data[8] if len(row_data) > 8 else "Unknown"
-            resume = row_data[9] if len(row_data) > 9 else "SDE"
-            remote = row_data[10] if len(row_data) > 10 else "Unknown"
-            source = row_data[12] if len(row_data) > 12 else "Rescued"
+            # Discarded Entries has no Resume column, so from index 9 on its
+            # layout diverges from Valid Entries by one:
+            #
+            #     idx  discarded      valid
+            #      9   Remote?        Resume
+            #     10   Entry Date     Remote?
+            #     11   Source         Entry Date
+            #     12   Sponsorship    Source
+            #
+            # Reading Valid's indices against a Discarded row shifted every
+            # rescued row one column right: a date landed in Remote? and a
+            # sponsorship value in Source. That is where the "Yes" and
+            # timestamp entries in the Source column came from.
+            resume = "SDE"                      # no equivalent in Discarded
+            remote = row_data[9] if len(row_data) > 9 else "Unknown"
+            source = row_data[11] if len(row_data) > 11 else "Rescued"
 
             # Entry Date gets a PROPER date (DD-Mon-YYYY, matching other rows);
             # the rescue marker moves to Notes (col 14) so it never corrupts the date.
