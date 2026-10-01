@@ -395,6 +395,18 @@ class DiscardedAuditor:
         """Move rescued jobs back to Valid Entries."""
         log.info("\n--- Rescuing false positives ---")
         valid_data = self.valid.get_all_values()
+        valid_header = valid_data[0] if valid_data else []
+
+        # Read the Discarded header live rather than assuming a layout.
+        # That assumption is what shifted 90 rescued rows: the sheets
+        # diverge at index 9 because Discarded has no Resume column.
+        try:
+            disc_header = self.discarded.row_values(1)
+        except Exception as _he:
+            log.warning("could not read the Discarded header: %s", _he)
+            disc_header = []
+
+        from aggregator.sheet_row import copy_row as _copy_row
         existing_keys = set()
         for row in valid_data[1:]:
             if len(row) > 3:
@@ -417,34 +429,32 @@ class DiscardedAuditor:
             self.brain.add_rescue(company, title, rescue_reason)
 
             next_sr += 1
-            url = row_data[5] if len(row_data) > 5 else ""
-            job_id = row_data[6] if len(row_data) > 6 else "N/A"
-            job_type = row_data[7] if len(row_data) > 7 else "Internship"
-            location = row_data[8] if len(row_data) > 8 else "Unknown"
-            # Discarded Entries has no Resume column, so from index 9 on its
-            # layout diverges from Valid Entries by one:
-            #
-            #     idx  discarded      valid
-            #      9   Remote?        Resume
-            #     10   Entry Date     Remote?
-            #     11   Source         Entry Date
-            #     12   Sponsorship    Source
-            #
-            # Reading Valid's indices against a Discarded row shifted every
-            # rescued row one column right: a date landed in Remote? and a
-            # sponsorship value in Source. That is where the "Yes" and
-            # timestamp entries in the Source column came from.
-            resume = "SDE"                      # no equivalent in Discarded
-            remote = row_data[9] if len(row_data) > 9 else "Unknown"
-            source = row_data[11] if len(row_data) > 11 else "Rescued"
-
             # Entry Date gets a PROPER date (DD-Mon-YYYY, matching other rows);
             # the rescue marker moves to Notes (col 14) so it never corrupts the date.
             _entry_date = datetime.now().strftime("%d-%b-%Y")
             _rescue_note = f"Rescued {self._format_date()}"
-            new_row = [str(next_sr), "Not Applied", company, title, "N/A",
-                      url, job_id, job_type, location, resume, remote,
-                      _entry_date, source, "Unknown", _rescue_note]
+            # Built by column NAME against both live headers. A column
+            # added to either sheet now shifts nothing, and a renamed one
+            # raises instead of writing silently to the wrong cell.
+            new_row = _copy_row(
+                disc_header, row_data, valid_header,
+                overrides={
+                    "Sr. No.": str(next_sr),
+                    "Status": "Not Applied",
+                    "Date Applied": "N/A",
+                    "Entry Date": _entry_date,
+                    "Notes": _rescue_note,
+                },
+                defaults={
+                    "Resume": "SDE",          # no equivalent in Discarded
+                    "Job ID": "N/A",
+                    "Job Type": "Internship",
+                    "Location": "Unknown",
+                    "Remote?": "Unknown",
+                    "Source": "Rescued",
+                    "Sponsorship": "Unknown",
+                },
+            )
             rows_to_add.append(new_row)
             existing_keys.add(key)
 

@@ -290,7 +290,9 @@ def check_orphaned_modules():
              # Run by hand; no module imports it.
              "test_filter_properties",
              # Run daily by selfcheck; no module imports it.
-             "morning_check"}
+             "morning_check",
+             # One-off repair, run by hand; nothing imports it.
+             "repair_shifted_rows"}
 
     mods, imports = {}, {}
     for p in _iter_py():
