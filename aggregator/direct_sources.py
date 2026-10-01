@@ -788,15 +788,30 @@ def fetch_all_direct_sources() -> List[Dict]:
     
     log.info("Fetching direct sources: Greenhouse, Lever, Ashby, HackerNews")
     
-    # Indeed via JobSpy. Narrow scope on purpose: LinkedIn/Glassdoor need
-    # proxies and block hard, but Indeed has no rate limiting and covers
-    # employers who never post to Greenhouse/Lever or the GitHub lists.
-    # Wrapped so a missing package or a bad response cannot break a run.
-    try:
-        from aggregator.jobspy_source import scrape_indeed
-        all_jobs.extend(scrape_indeed())
-    except Exception as e:
-        log.error(f"Indeed (JobSpy) scrape failed: {e}")
+    # Indeed via JobSpy - DISABLED.
+    #
+    # The previous comment here said Indeed has no rate limiting. It began
+    # returning 401 on every viewjob URL on 28 Sep and has not stopped.
+    # Measured over three days of logs:
+    #
+    #     88 failed fetches per aggregator run, every one an Indeed URL
+    #     35 rows contributed to the sheet in the pipeline's lifetime
+    #
+    # 264 wasted fetches a day for 35 rows total. Twenty technical roles
+    # appear among those failures, but their employers - Qualcomm, Collins,
+    # jamf - also post to ATS boards this pipeline already scrapes.
+    #
+    # Set this back to True if Indeed stops blocking; nothing else changes.
+    ENABLE_INDEED = False
+
+    if ENABLE_INDEED:
+        try:
+            from aggregator.jobspy_source import scrape_indeed
+            all_jobs.extend(scrape_indeed())
+        except Exception as e:
+            log.error(f"Indeed (JobSpy) scrape failed: {e}")
+    else:
+        log.info("Indeed (JobSpy): disabled - 401 on every URL since 28 Sep")
 
     try:
         all_jobs.extend(scrape_greenhouse())
