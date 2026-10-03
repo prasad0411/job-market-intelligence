@@ -1060,6 +1060,35 @@ STAFFING_AGENCIES = [
 ]
 
 CLEARANCE_COMPANIES = [
+    "innovative defense technologies",
+    "freedom technology solutions",
+    "freedomconsulting",
+    "frontier technology",
+    "carnegie mellon sei",
+    "nextgen federal",
+    "pingwind",
+    "sparksoft",
+    "saalex",
+    "noblis",
+    "nightwing",
+    "teledyne",
+    "moog",
+    "thales",
+    "shield ai",
+    "ultra intelligence",
+    "palo alto networks public sector",
+    "united launch alliance",
+    "blue origin",
+    "relativity space",
+    "astranis",
+    "rocket lab",
+    "varda space",
+    "muon space",
+    "skyryse",
+    "radiant industries",
+    "aerovironment",
+    "anduril",
+
     "booz allen", "raytheon", "northrop grumman", "lockheed martin",
     "general dynamics", "bae systems", "l3harris", "leidos",
     "saic", "caci", "mantech", "perspecta", "kbr",
@@ -3588,6 +3617,13 @@ H1B_KNOWN_SPONSORS = {
 }
 
 H1B_NO_SPONSOR = {
+    "usaa",
+    "amtrak",
+    "federal reserve",
+    "department of veterans affairs",
+    "metropolitan transportation authority",
+    "sandia national",
+
     "spacex",
     "boeing", "lockheed martin", "northrop grumman",
     "raytheon", "rtx", "general dynamics", "bae systems",
