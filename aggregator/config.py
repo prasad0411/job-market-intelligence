@@ -1060,6 +1060,16 @@ STAFFING_AGENCIES = [
 ]
 
 CLEARANCE_COMPANIES = [
+    "actionet",
+    "amida technology",
+    "allen control systems",
+    "itc federal",
+    "zone 5 technologies",
+    "mark43",
+    "joby aviation",
+    "spacemobile",
+    "schweitzer engineering",
+
     "innovative defense technologies",
     "freedom technology solutions",
     "freedomconsulting",
@@ -3617,6 +3627,16 @@ H1B_KNOWN_SPONSORS = {
 }
 
 H1B_NO_SPONSOR = {
+    "allegheny county",
+    "maricopa county",
+    "oklahoma state government",
+    "sarasota county",
+    "public broadcasting service",
+    "npr",
+    "national laboratory of the rockies",
+    "jones lang lasalle",
+    "koch",
+
     "usaa",
     "amtrak",
     "federal reserve",
