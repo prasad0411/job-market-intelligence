@@ -98,7 +98,16 @@ def _install_child_reaper():
 
 
 def _install_watchdog():
-    """Daemon thread that dumps all stacks when progress stops."""
+    """Daemon thread that dumps all stacks when progress stops.
+
+    A logging handler was tried as the progress signal and had to be removed:
+    adding one to the root logger makes install_logging() skip basicConfig,
+    which silently disabled every INFO log line. beat() remains uncalled, so
+    this effectively warns once per long run rather than on a true stall.
+
+    The real protection against the 5 Oct seven-hour hang is the session
+    timeout below, which bounds the Sheets call that actually blocked.
+    """
     def _watch():
         warned = False
         while True:
@@ -137,6 +146,16 @@ def install(watchdog=True, reaper=True):
     if watchdog:
         _install_watchdog()
         out["watchdog"] = "%ds stall threshold" % WATCHDOG_STALL_SECONDS
+
+    # gspread calls through google.auth's AuthorizedSession, which passes no
+    # timeout. urllib3 then sets sock.settimeout(None) from its own config,
+    # overriding socket.setdefaulttimeout, so the global ceiling never applied
+    # to Sheets. On 5 Oct one call blocked for seven hours.
+    try:
+        out["session_timeout"] = ("60s" if install_session_timeout()
+                                  else "already set")
+    except Exception as _se:
+        out["session_timeout"] = "failed: %s" % str(_se)[:40]
 
     # Start the run clock. Wall-clock duration counts time spent suspended,
     # which made correct overnight runs look like ceiling violations.
@@ -389,3 +408,22 @@ def classify_duration(wall_s, cpu_s, active_s, ceiling_s):
                       "- stuck waiting, not working" % (basis, ceiling_s, cpu_s))
     return True, ("active %.0fs over the %.0fs ceiling, cpu %.0fs"
                   % (basis, ceiling_s, cpu_s if cpu_s is not None else -1))
+
+
+def install_session_timeout(default=60.0):
+    """Give google.auth's session a default timeout."""
+    try:
+        from google.auth.transport.requests import AuthorizedSession
+    except ImportError:
+        return False
+    orig = AuthorizedSession.request
+    if getattr(orig, "_timeout_injected", False):
+        return False
+
+    def request(self, method, url, *a, **kw):
+        kw.setdefault("timeout", default)
+        return orig(self, method, url, *a, **kw)
+
+    request._timeout_injected = True
+    AuthorizedSession.request = request
+    return True
