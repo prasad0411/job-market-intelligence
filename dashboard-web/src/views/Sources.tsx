@@ -11,7 +11,7 @@ export function Sources() {
   const q = useApi<QuarantineRow[]>('/quarantine');
   return (
     <div className="stack">
-    <Panel title="Source quality" subtitle="How many postings from each source passed the data quality checks">
+    <Panel title="Source quality">
       <Notice error={s.error} loading={s.loading && !s.data} />
       {s.data && (
         <DataTable

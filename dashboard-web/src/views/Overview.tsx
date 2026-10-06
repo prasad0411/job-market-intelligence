@@ -30,7 +30,7 @@ export function Overview() {
         <Notice error={pipeline.error} loading={pipeline.loading && !pipeline.data} />
         {pipeline.data && <FunnelBar stages={pipeline.data} />}
       </Panel>
-      <Panel title="Weekly ingest" subtitle="Postings collected each week, and how many passed every filter">
+      <Panel title="Weekly ingest">
         <Notice error={weekly.error} loading={weekly.loading && !weekly.data} />
         {weekly.data && (
           <ColumnChart
