@@ -132,3 +132,27 @@ input[type='search'], input[type='number'], select { font: inherit; padding: 0.4
 .snapshot { margin: 0 0 1.1rem; font-size: 0.82rem; color: var(--ink-faint); }
 .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.25rem; }
 @media (max-width: 1000px) { .grid-3 { grid-template-columns: minmax(0, 1fr); } }
+
+.weekly-summary { display: flex; flex-wrap: wrap; gap: 0.75rem 2rem; margin: 0 0 1rem; }
+.weekly-summary dt { font-size: 0.75rem; color: var(--ink-faint); }
+.weekly-summary dd { margin: 0.1rem 0 0; font-size: 1.15rem; font-weight: 600; }
+.weekly-summary small { font-size: 0.8rem; font-weight: 500; color: var(--ink-faint); margin-left: 0.25rem; }
+.weekly-summary .up { color: var(--good); }
+.weekly-summary .down { color: var(--warn); }
+.weekly-plot { position: relative; }
+.weekly-plot svg { width: 100%; height: auto; display: block; }
+.weekly-plot .grid { stroke: var(--line); stroke-width: 1; }
+.weekly-plot .axis { fill: var(--ink-faint); font-size: 12px; font-family: inherit; }
+.weekly-plot .seg-valid { fill: var(--primary); }
+.weekly-plot .seg-filtered { fill: color-mix(in srgb, var(--primary) 28%, transparent); }
+.weekly-plot .hit { fill: transparent; cursor: pointer; outline: none; }
+.weekly-plot g.active .seg-valid, .weekly-plot g.active .seg-filtered { filter: brightness(1.15); }
+.weekly-plot g.active .hit { fill: color-mix(in srgb, var(--primary) 7%, transparent); }
+.weekly-tip {
+  position: absolute; top: 0; transform: translateX(-50%); pointer-events: none; z-index: 2;
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 0.55rem 0.7rem;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18); display: grid; gap: 0.15rem; font-size: 0.8rem; white-space: nowrap;
+}
+.weekly-tip strong { font-size: 0.85rem; }
+.swatch.valid { background: var(--primary); }
+.swatch.filtered { background: color-mix(in srgb, var(--primary) 28%, transparent); }

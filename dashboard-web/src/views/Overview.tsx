@@ -1,5 +1,5 @@
 import type { Stage, Summary, WeekPoint } from '../api';
-import { ColumnChart } from '../components/ColumnChart';
+import { WeeklyChart } from '../components/WeeklyChart';
 import { FunnelBar } from '../components/FunnelBar';
 import { Notice } from '../components/Notice';
 import { Panel } from '../components/Panel';
@@ -32,13 +32,7 @@ export function Overview() {
       </Panel>
       <Panel title="Weekly ingest">
         <Notice error={weekly.error} loading={weekly.loading && !weekly.data} />
-        {weekly.data && (
-          <ColumnChart
-            data={weekly.data.map((w) => ({ label: w.week, value: w.postings, secondary: w.valid }))}
-            valueLabel="postings"
-            secondaryLabel="valid"
-          />
-        )}
+        {weekly.data && <WeeklyChart data={weekly.data} />}
       </Panel>
     </div>
   );
