@@ -1,6 +1,7 @@
-import type { FunnelRow, Summary, WeekPoint } from '../api';
+import type { FunnelRow, Stage, Summary, WeekPoint } from '../api';
 import { BarList } from '../components/BarList';
 import { ColumnChart } from '../components/ColumnChart';
+import { FunnelBar } from '../components/FunnelBar';
 import { Notice } from '../components/Notice';
 import { Panel } from '../components/Panel';
 import { StatCard } from '../components/StatCard';
@@ -11,6 +12,7 @@ export function Overview() {
   const summary = useApi<Summary>('/summary');
   const weekly = useApi<WeekPoint[]>('/weekly');
   const funnel = useApi<FunnelRow[]>('/funnel?days=30');
+  const pipeline = useApi<Stage[]>('/pipeline');
   const s = summary.data;
   return (
     <div className="stack">
@@ -24,6 +26,10 @@ export function Overview() {
           <StatCard label="Average run" value={`${s.avg_run_minutes} min`} note="fully automated, 3 runs a day" />
         </div>
       )}
+      <Panel title="Where every posting went" subtitle="All postings the pipeline has evaluated, by the first gate that stopped them. Cheapest checks run first">
+        <Notice error={pipeline.error} loading={pipeline.loading && !pipeline.data} />
+        {pipeline.data && <FunnelBar stages={pipeline.data} />}
+      </Panel>
       <div className="grid-2">
         <Panel title="Weekly ingest" subtitle="Postings landed per ISO week, from the dbt fct_weekly_ingest mart">
           <Notice error={weekly.error} loading={weekly.loading && !weekly.data} />

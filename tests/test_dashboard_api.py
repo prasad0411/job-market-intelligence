@@ -121,3 +121,50 @@ def test_read_only_connections_cannot_write(tmp_path):
     ro = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     with pytest.raises(sqlite3.OperationalError):
         ro.execute("insert into t values (1)")
+
+
+def test_pipeline_funnel_accounts_for_every_posting(runs_con):
+    f = queries.pipeline_funnel(runs_con)
+    assert f[-1] == {"stage": "Valid, written to tracker", "key": "valid", "count": 125}
+    assert sum(s["count"] for s in f) == queries.summary(runs_con, _analytics_stub(), _warehouse_stub())["jobs_evaluated"]
+
+
+def test_runs_timeline(runs_con):
+    r = queries.runs(runs_con)
+    assert [x["minutes"] for x in r] == [30.0, 40.0]
+    assert r[1] == {"ts": "2026-10-06T12:48:13", "minutes": 40.0, "valid": 13, "discarded": 31, "failed_http": 20}
+
+
+def test_quarantine_sorted(warehouse_con):
+    warehouse_con.execute("create table main_marts.fct_rejection_funnel (reason_family text, quarantine_reason text, rejected_rows int, share_of_rejected real)")
+    warehouse_con.executemany("insert into main_marts.fct_rejection_funnel values (?,?,?,?)",
+                              [("entity", "missing_company", 120, 0.26), ("url", "malformed_url", 310, 0.66)])
+    assert [q["reason"] for q in queries.quarantine(warehouse_con)] == ["malformed_url", "missing_company"]
+
+
+def test_snapshot_has_no_personal_outcomes(runs_con, analytics_con, warehouse_con, tmp_path):
+    from dashboard_api import export_snapshot
+    warehouse_con.execute("create table main_marts.fct_rejection_funnel (reason_family text, quarantine_reason text, rejected_rows int, share_of_rejected real)")
+    analytics_con.execute("create table company_outcomes (company text, total_applied int, total_interviews int)")
+    analytics_con.execute("insert into company_outcomes values ('Acme', 3, 1)")
+    files = export_snapshot.write(export_snapshot.build(runs_con, analytics_con, warehouse_con), tmp_path)
+    blob = " ".join(f.read_text() for f in files)
+    assert {f.stem for f in files} >= {"summary", "jobs", "companies", "pipeline", "runs", "quarantine", "meta"}
+    for word in ("total_applied", "total_interviews", "applied", "interview", "outcome"):
+        assert word not in blob
+
+
+def _analytics_stub():
+    import sqlite3 as s
+    c = s.connect(":memory:")
+    c.execute("create table jobs (outcome text, is_sponsored int, is_remote int)")
+    return c
+
+
+def _warehouse_stub():
+    import sqlite3 as s
+    c = s.connect(":memory:")
+    c.execute("attach ':memory:' as main_marts")
+    c.execute("create table main_marts.dim_company (company_display text)")
+    c.execute("create table main_marts.fct_source_quality (source text)")
+    return c

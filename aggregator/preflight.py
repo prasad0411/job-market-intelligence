@@ -292,7 +292,10 @@ def check_orphaned_modules():
              # Run daily by selfcheck; no module imports it.
              "morning_check",
              # One-off repair, run by hand; nothing imports it.
-             "repair_shifted_rows"}
+             "repair_shifted_rows",
+             # Run daily by scripts/publish_dashboard.sh (python -m
+             # dashboard_api.export_snapshot) under launchd; no module imports it.
+             "export_snapshot"}
 
     mods, imports = {}, {}
     for p in _iter_py():

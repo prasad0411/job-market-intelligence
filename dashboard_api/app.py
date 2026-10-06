@@ -87,3 +87,21 @@ def jobs(q: str = "", source: str = "", job_type: str = "", sponsored: bool = Fa
 def job_sources():
     with _open(lambda: _sqlite("analytics.db")) as (a,):
         return queries.job_sources(a)
+
+
+@app.get("/pipeline")
+def pipeline():
+    with _open(lambda: _sqlite("run_history.db")) as (r,):
+        return queries.pipeline_funnel(r)
+
+
+@app.get("/runs")
+def runs():
+    with _open(lambda: _sqlite("run_history.db")) as (r,):
+        return queries.runs(r)
+
+
+@app.get("/quarantine")
+def quarantine():
+    with _open(_warehouse) as (w,):
+        return queries.quarantine(w)

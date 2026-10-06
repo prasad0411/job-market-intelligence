@@ -10,8 +10,8 @@ export function ColumnChart({ data, valueLabel, secondaryLabel, height = 180 }: 
   return (
     <figure className="colchart" aria-label={`${valueLabel} by period`}>
       <div className="colchart-plot" style={{ height }}>
-        {data.map((d) => (
-          <div key={d.label} className="col" title={`${d.label}: ${num(d.value)} ${valueLabel}${d.secondary !== undefined && secondaryLabel ? `, ${num(d.secondary)} ${secondaryLabel}` : ''}`}>
+        {data.map((d, i) => (
+          <div key={`${i}-${d.label}`} className="col" title={`${d.label}: ${num(d.value)} ${valueLabel}${d.secondary !== undefined && secondaryLabel ? `, ${num(d.secondary)} ${secondaryLabel}` : ''}`}>
             <span className="col-bar" style={{ height: `${(d.value / max) * 100}%` }} />
             {d.secondary !== undefined && <span className="col-bar col-secondary" style={{ height: `${(d.secondary / max) * 100}%` }} />}
           </div>

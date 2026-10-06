@@ -142,3 +142,36 @@ def job_sources(analytics_con) -> list[dict]:
     rows = _rows(analytics_con, "select source, count(*) from jobs where outcome = 'valid' and url like 'http%' "
                                 "group by source order by 2 desc")
     return [{"source": s, "count": int(n)} for s, n in rows]
+
+
+FUNNEL_STAGES = [
+    ("duplicate_url", "Duplicate URL"),
+    ("duplicate_job", "Duplicate job"),
+    ("skipped_non_tech", "Not a tech role"),
+    ("skipped_old", "Too old"),
+    ("skipped_international", "Outside the US"),
+    ("skipped_clearance", "Needs clearance"),
+    ("skipped_blacklisted", "Blacklisted company"),
+    ("failed_http", "Page failed to load"),
+    ("discarded", "Failed validation"),
+    ("valid", "Valid, written to tracker"),
+]
+
+
+def pipeline_funnel(runs_con) -> list[dict]:
+    """Where every evaluated posting ended up, summed over all runs."""
+    cols = ", ".join(f"sum({c})" for c, _ in FUNNEL_STAGES)
+    totals = _rows(runs_con, f"select {cols} from runs")[0]
+    return [{"stage": label, "key": key, "count": int(n or 0)} for (key, label), n in zip(FUNNEL_STAGES, totals)]
+
+
+def runs(runs_con) -> list[dict]:
+    rows = _rows(runs_con, "select ts, elapsed_seconds, valid, discarded, failed_http from runs order by ts")
+    return [{"ts": ts, "minutes": round(float(e or 0) / 60, 1), "valid": int(v or 0), "discarded": int(d or 0),
+             "failed_http": int(f or 0)} for ts, e, v, d, f in rows]
+
+
+def quarantine(warehouse_con) -> list[dict]:
+    rows = _rows(warehouse_con, "select reason_family, quarantine_reason, rejected_rows, share_of_rejected "
+                                "from main_marts.fct_rejection_funnel order by rejected_rows desc")
+    return [{"family": f, "reason": r, "rows": int(n or 0), "share": float(s or 0)} for f, r, n, s in rows]

@@ -22,10 +22,15 @@ export interface Job {
   job_type: string; remote: boolean; sponsored: boolean; track: string;
 }
 export interface JobPage { total: number; items: Job[] }
+export interface Stage { stage: string; key: string; count: number }
+export interface Run { ts: string; minutes: number; valid: number; discarded: number; failed_http: number }
+export interface QuarantineRow { family: string; reason: string; rows: number; share: number }
+export interface Meta { generated_at: string }
 export interface JobQuery { q: string; source: string; jobType: string; sponsored: boolean; remote: boolean; page: number }
 
 export const PAGE_SIZE = 25;
 const BASE: string = import.meta.env?.VITE_API_BASE ?? '/api';
+export const STATIC_MODE: boolean = import.meta.env?.VITE_DATA_MODE === 'static';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -37,6 +42,10 @@ export class ApiError extends Error {
 }
 
 export async function getJson<T>(path: string, signal?: AbortSignal, fetchImpl: typeof fetch = fetch): Promise<T> {
+  if (STATIC_MODE) {
+    const { resolveStatic } = await import('./staticData');
+    return resolveStatic<T>(path, fetchImpl);
+  }
   let res: Response;
   try {
     res = await fetchImpl(`${BASE}${path}`, { signal });

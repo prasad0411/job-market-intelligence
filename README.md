@@ -233,6 +233,8 @@ companies; discovery has taken it to 871 without manual curation.
 
 ## Dashboard
 
+**Live:** https://prasad0411.github.io/job-market-intelligence/ (a public snapshot of the real pipeline, republished daily)
+
 A React 19 and strict TypeScript app (`dashboard-web/`) over a read only FastAPI service (`dashboard_api/`).
 
 ![Dashboard overview](docs/screenshots/dashboard-overview.png)
