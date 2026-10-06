@@ -1,5 +1,8 @@
-# Job Aggregation Pipeline
+# Job Market Intelligence Platform
 
+[![CI](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ci.yml)
+[![dashboard](https://github.com/prasad0411/job-market-intelligence/actions/workflows/dashboard.yml/badge.svg)](https://github.com/prasad0411/job-market-intelligence/actions/workflows/dashboard.yml)
+[![ingest-ts](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ingest-ts.yml/badge.svg)](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ingest-ts.yml)
 [![Tests](https://img.shields.io/badge/tests-261_passing-brightgreen)](tests/)
 [![Preflight](https://img.shields.io/badge/preflight-19_wiring_checks-blue)](aggregator/preflight.py)
 [![dbt](https://img.shields.io/badge/dbt-35_data_tests-FF694B?logo=dbt&logoColor=white)](data_platform/dbt/)
@@ -23,6 +26,8 @@ below follows from taking that seriously.
 - [Architecture](#architecture)
 - [Data platform](#data-platform)
 - [Data sources](#data-sources)
+- [Dashboard](#dashboard)
+- [TypeScript ingestion](#typescript-ingestion)
 - [Engineering decisions](#engineering-decisions)
 - [Self-maintenance](#self-maintenance)
 - [Failure modes](#failure-modes)
@@ -216,6 +221,8 @@ airflow dags test medallion_pipeline 2026-09-15
 | Rippling | 12 | — | none — dropped by the age gate |
 | GitHub feeds | 12 | 32–71% | age column, `0d`–`52m`–`Aug 21` |
 | Indeed | 6 queries | — | `date_posted`, 100% coverage |
+| The Muse (TypeScript service) | public API, 2 categories, 2 levels | 100% | `publication_date` |
+| Remotive (TypeScript service) | public API, 2 categories | 100% | `publication_date` |
 
 ATS board counts grow on their own. `ats_discovery` inspects every URL the
 pipeline has processed, identifies boards it has not seen, probes their API, and
@@ -223,6 +230,39 @@ appends the working ones to `brain.json`. The hardcoded starting set was 263
 companies; discovery has taken it to 871 without manual curation.
 
 ---
+
+## Dashboard
+
+A React 19 and strict TypeScript app (`dashboard-web/`) over a read only FastAPI service (`dashboard_api/`).
+
+![Dashboard overview](docs/screenshots/dashboard-overview.png)
+
+| View | What it shows |
+|---|---|
+| Overview | Postings evaluated, valid postings, sponsorship share, companies and run time; weekly ingest from the `fct_weekly_ingest` mart; why postings were filtered over the last 30 days |
+| Postings | Search plus source, type, sponsorship and remote filters with paging; keyboard review sessions (J and K move, S shortlists, X skips) that time every decision and compare it with a spreadsheet baseline |
+| Sources | Accepted versus quarantined rows and yield per source, from `fct_source_quality` |
+| Companies | Hiring activity and sponsorship share, from `dim_company` |
+
+![Postings and review sessions](docs/screenshots/dashboard-postings.png)
+
+**Engineering.** Reusable building blocks (a generic sortable `DataTable`, `StatCard`, `Panel`, column and bar charts), state in a Context plus `useReducer` store, and layouts that hold down to phone width. Every connection is read only: SQLite opens with `mode=ro` and DuckDB with `read_only=True`, and personal application outcomes are never queried. Charts read the dbt marts because they are tested; the postings list normalises values that historically arrived in shifted columns instead of dropping those rows. Vitest and React Testing Library cover the reducers, query building and full user flows; the API has its own pytest suite, and both run in CI.
+
+```bash
+./venv/bin/python -m uvicorn dashboard_api.app:app --port 8001   # API
+cd dashboard-web && npm ci && npm run dev                         # http://localhost:5174
+```
+
+## TypeScript ingestion
+
+`ingest-ts/` is a Node and strict TypeScript service that pulls entry level and internship roles from The Muse and remote software and data roles from Remotive. Requests retry with exponential backoff on 429 and 5xx responses, each source fails independently, and records are deduplicated by URL before being written as JSON lines.
+
+`aggregator/ts_sources.py` runs the service inside every aggregator run and validates each record. A missing Node binary, a missing build, a timeout or a malformed line costs only those records, never the run, and Node is located even under launchd's minimal `PATH`. From there the records pass through the same title gate, US location filter, dedup tiers and page reader as Greenhouse, Lever or Ashby, and `health_heartbeat` watches both sources.
+
+```bash
+cd ingest-ts && npm ci && npm test && npm run build
+node dist/index.js | head        # one JSON record per line; summary on stderr
+```
 
 ## Engineering decisions
 
@@ -457,6 +497,9 @@ scripts/
   ats_discovery.py      finds new ATS boards nightly
   health_heartbeat.py   24-source monitoring
 
+dashboard_api/          read only FastAPI behind the dashboard
+dashboard-web/          React + TypeScript dashboard
+ingest-ts/              TypeScript ingestion service (The Muse, Remotive)
 analytics/              ETL, anomaly detection, title similarity
 outreach/               email discovery, verification, sending
 tests/                  250 tests, 17 of them wiring-specific
