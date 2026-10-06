@@ -134,7 +134,8 @@ def check_health():
                         "zapplyjobs_newgrad", "zapplyjobs_2026", "SimplifyJobs_2026",
                         "greenhouse_direct", "ashby_direct", "lever_direct",
                         "workday_direct", "smartrecruiters_direct",
-                        "workable_direct", "rippling_direct", "indeed_direct", "Email"]:
+                        "workable_direct", "rippling_direct", "themuse_ts", "remotive_ts",
+                        "indeed_direct", "Email"]:
                 if src in line:
                     source_counts[src] = source_counts.get(src, 0) + 1
                     break

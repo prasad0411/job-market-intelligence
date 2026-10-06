@@ -781,6 +781,27 @@ def _load_discovered_companies():
         pass
 
 
+def scrape_ts_sources() -> List[Dict]:
+    """Jobs from the TypeScript ingestion service in ingest-ts/ (The Muse, Remotive)."""
+    from aggregator.ts_sources import run_ts_ingest
+    jobs = []
+    for rec in run_ts_ingest():
+        if not _is_intern_or_newgrad(rec["title"]):
+            continue
+        jobs.append({
+            "company": rec["company"],
+            "title": rec["title"],
+            "location": rec["location"],
+            "url": rec["url"],
+            "job_id": rec["job_id"],
+            "source": rec["source"],
+            "age": _pick_age(rec, ("published_at",)),
+            "is_closed": False,
+        })
+    log.info(f"TypeScript sources: {len(jobs)} jobs")
+    return jobs
+
+
 def fetch_all_direct_sources() -> List[Dict]:
     """Fetch from all direct ATS APIs. Returns list of job dicts."""
     _load_discovered_companies()  # Auto-expand company list from brain
@@ -858,6 +879,11 @@ def fetch_all_direct_sources() -> List[Dict]:
     except Exception as e:
         log.error(f"Workday tenants scrape failed: {e}")
     
+    try:
+        all_jobs.extend(scrape_ts_sources())
+    except Exception as e:
+        log.error(f"TypeScript sources failed: {e}")
+
     # Filter US-only
     us_jobs = [j for j in all_jobs if _is_us_location(j.get("location", "Unknown"))]
     log.info(f"Total direct source jobs: {len(us_jobs)} (filtered from {len(all_jobs)})")

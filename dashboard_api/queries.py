@@ -41,8 +41,8 @@ def summary(runs_con, analytics_con, warehouse_con) -> dict:
         "select count(*), sum(case when is_sponsored = 1 then 1 else 0 end), "
         "sum(case when is_remote = 1 then 1 else 0 end) from jobs where outcome = 'valid'",
     )[0]
-    companies = sum(1 for (name,) in _rows(warehouse_con, "select company_display from main_marts.dim_company") if clean_name(name))
-    sources = _rows(warehouse_con, "select count(distinct source) from main_marts.fct_source_quality")[0][0]
+    n_companies = sum(1 for (name,) in _rows(warehouse_con, "select company_display from main_marts.dim_company") if clean_name(name))
+    n_sources = _rows(warehouse_con, "select count(distinct source) from main_marts.fct_source_quality")[0][0]
     return {
         "runs": int(n or 0),
         "last_run": last,
@@ -52,8 +52,8 @@ def summary(runs_con, analytics_con, warehouse_con) -> dict:
         "valid_jobs": int(jobs_valid or 0),
         "sponsored_share": round(int(sponsored or 0) / jobs_valid, 4) if jobs_valid else 0.0,
         "remote_jobs": int(remote or 0),
-        "companies": companies,
-        "sources": int(sources or 0),
+        "companies": n_companies,
+        "sources": int(n_sources or 0),
     }
 
 
