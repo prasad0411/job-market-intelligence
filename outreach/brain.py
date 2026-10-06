@@ -751,14 +751,22 @@ class Brain:
         e["quality_rate"] = rate
         # Rolling rate history (last 30 runs)
         hist = e.get("rate_history", [])
-        run_rate = round(valid / fetched, 3) if fetched else 0.0
+        # round(x, 3) turned a low-yield source into exactly 0.000: 5 valid
+        # from 15,000 fetched is 0.00033, which rounded to zero every run, so
+        # the decay check saw a permanent 0% recent rate and fired forever.
+        run_rate = round(valid / fetched, 6) if fetched else 0.0
         hist.append({"ts": time.time(), "rate": run_rate})
         e["rate_history"] = hist[-30:]
         # Decay detection: if last 7 runs avg < 50% of lifetime avg → flag
+        # A source whose lifetime rate is already under 2% is marginal, and a
+        # drop there is noise rather than decay. Six of the nine alerts on
+        # 5 Oct came from sources yielding 0.1% to 1.4% that were still
+        # producing rows in that same run.
+        MIN_LIFETIME_RATE = 0.02
         if len(hist) >= 7:
             recent_avg = sum(h["rate"] for h in hist[-7:]) / 7
             lifetime_avg = rate
-            if lifetime_avg > 0 and recent_avg < lifetime_avg * 0.5:
+            if lifetime_avg > MIN_LIFETIME_RATE and recent_avg < lifetime_avg * 0.5:
                 log.warning(
                     f"Brain: source quality decay detected for {source}: "
                     f"recent={recent_avg:.2%} vs lifetime={lifetime_avg:.2%}"
