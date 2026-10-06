@@ -1,0 +1,25 @@
+name: dashboard
+
+on:
+  push:
+    branches: [main]
+    paths: ["dashboard-web/**", "dashboard_api/**", ".github/workflows/dashboard.yml"]
+  pull_request:
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: dashboard-web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard-web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
