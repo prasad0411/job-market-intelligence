@@ -34,16 +34,22 @@ def parse_entry_date(text: str, today: date | None = None) -> date | None:
         return None
     today = today or date.today()
     for fmt in _FORMATS:
+        has_year = "%Y" in fmt
         try:
-            dt = datetime.strptime(s, fmt)
+            # Python 3.13 deprecates parsing a day of month without a year, so parse yearless
+            # formats against a placeholder leap year (2000) and set the real year afterwards.
+            dt = datetime.strptime(s if has_year else f"{s} 2000", fmt if has_year else f"{fmt} %Y")
         except ValueError:
             continue
-        if "%Y" not in fmt:
-            try:
-                d = dt.replace(year=today.year).date()
-            except ValueError:  # 29 February in a non leap year
-                continue
-            return d.replace(year=today.year - 1) if d > today else d
+        if not has_year:
+            for year in (today.year, today.year - 1):
+                try:
+                    d = dt.replace(year=year).date()
+                except ValueError:  # 29 February outside a leap year
+                    continue
+                if d <= today:
+                    return d
+            return None
         return dt.date()
     return None
 

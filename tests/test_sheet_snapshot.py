@@ -85,3 +85,12 @@ def test_sources_and_discard_reasons():
 def test_records_handles_short_rows_and_duplicate_headers():
     rows = ss.records([["A", "B", "A"], ["1"], ["", "", ""], ["x", "y", "z"]])
     assert rows == [{"A": "1", "B": ""}, {"A": "x", "B": "y"}]
+
+
+def test_yearless_dates_raise_no_deprecation_warning():
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert ss.parse_entry_date("05 October, 09:37 AM", TODAY) == date(2026, 10, 5)
+        assert ss.parse_entry_date("29 February", date(2028, 3, 1)) == date(2028, 2, 29)
+        assert ss.parse_entry_date("29 February", date(2026, 3, 1)) is None
