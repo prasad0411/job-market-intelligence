@@ -11,7 +11,7 @@ export function Sources() {
   const q = useApi<QuarantineRow[]>('/quarantine');
   return (
     <div className="stack">
-    <Panel title="Source quality" subtitle="Rows accepted at the Silver gate versus quarantined, from the dbt fct_source_quality mart">
+    <Panel title="Source quality" subtitle="How many postings from each source passed the data quality checks">
       <Notice error={s.error} loading={s.loading && !s.data} />
       {s.data && (
         <DataTable
@@ -31,7 +31,7 @@ export function Sources() {
         />
       )}
     </Panel>
-    <Panel title="Data quality gate" subtitle="Rows held back at the Silver layer of the lakehouse, by rule. Nothing is deleted; every rejection stays queryable">
+    <Panel title="Data quality gate" subtitle="Rows held back by data quality rules, by rule">
       <Notice error={q.error} loading={q.loading && !q.data} />
       {q.data && (
         <BarList items={q.data.map((r) => ({ label: r.reason.replace(/_/g, ' '), value: r.rows, detail: pct(r.share) }))} />

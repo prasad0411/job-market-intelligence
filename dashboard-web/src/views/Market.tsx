@@ -17,8 +17,8 @@ export function Market() {
         <>
           <div className="stats">
             <StatCard label="Early career postings" value={num(d.valid_postings)} note="internship, new grad and co-op roles" />
-            <StatCard label="Companies hiring" value={num(d.companies_total)} />
-            <StatCard label="Companies that sponsor H-1B" value={num(d.companies_sponsoring)} note={`${pct(d.companies_sponsoring / Math.max(1, d.companies_total))} of companies tracked`} />
+            <StatCard label="Companies with open roles" value={num(d.companies_total)} />
+            <StatCard label="Companies that sponsor H-1B" value={num(d.companies_sponsoring)} note={`${pct(d.companies_sponsoring / Math.max(1, d.companies_total))} of companies with open roles`} />
             <StatCard label="Remote postings" value={pct(d.remote_share)} />
           </div>
           <div className="grid-3">
@@ -33,7 +33,7 @@ export function Market() {
             </Panel>
           </div>
           <div className="grid-2">
-            <Panel title="Who is hiring most" subtitle="Valid postings per company, from the dbt dim_company mart">
+            <Panel title="Who is hiring most" subtitle="Companies with the most valid postings">
               <DataTable
                 rows={d.top_hiring}
                 rowKey={(c) => c.company}

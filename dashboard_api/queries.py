@@ -194,7 +194,7 @@ def _state_of(location: str) -> str | None:
     return m.group(1) if m and m.group(1) in US_STATES else None
 
 
-def insights(analytics_con, warehouse_con) -> dict:
+def insights(analytics_con, warehouse_con=None) -> dict:
     """Market level views of the valid postings and the companies behind them."""
     role, track, states = {}, {}, {}
     total = remote = 0
@@ -210,7 +210,22 @@ def insights(analytics_con, warehouse_con) -> dict:
         if st:
             states[st] = states.get(st, 0) + 1
 
-    named = [c for c in companies(warehouse_con, limit=100000)]
+    # Company views come from the same valid postings as every other number on this tab,
+    # so posting level and company level sponsorship always agree.
+    per_company = {}
+    for company, sponsored, source in _rows(
+            analytics_con, "select company, is_sponsored, source from jobs where outcome = 'valid'"):
+        if not clean_name(company):
+            continue
+        c = per_company.setdefault(company, {"valid": 0, "sponsored": 0, "sources": set()})
+        c["valid"] += 1
+        c["sponsored"] += 1 if sponsored == 1 else 0
+        c["sources"].add(source)
+    named = sorted(
+        ({"company": k, "total": v["valid"], "valid": v["valid"], "sponsored": v["sponsored"],
+          "sponsorship_rate": round(v["sponsored"] / v["valid"], 4), "valid_rate": 1.0, "sources": len(v["sources"])}
+         for k, v in per_company.items()),
+        key=lambda c: (-c["valid"], c["company"]))
     sponsoring = [c for c in named if c["sponsored"] > 0]
     order = lambda d: [{"label": k, "count": v} for k, v in sorted(d.items(), key=lambda kv: -kv[1])]
     track_names = {"SDE": "Software engineering", "ML": "Machine learning", "DA": "Data and analytics", "Other": "Other"}
@@ -223,7 +238,7 @@ def insights(analytics_con, warehouse_con) -> dict:
         "top_hiring": named[:10],
         "companies_total": len(named),
         "companies_sponsoring": len(sponsoring),
-        "top_sponsors": sorted(sponsoring, key=lambda c: -c["sponsored"])[:10],
+        "top_sponsors": sorted(sponsoring, key=lambda c: (-c["sponsored"], c["company"]))[:10],
     }
 
 

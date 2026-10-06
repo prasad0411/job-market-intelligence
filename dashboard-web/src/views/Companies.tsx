@@ -13,7 +13,7 @@ export function Companies() {
   return (
     <Panel
       title="Companies"
-      subtitle="Hiring activity and sponsorship from the dbt dim_company mart"
+      subtitle="Hiring activity and H-1B sponsorship by company"
       actions={
         <div className="inline-filters">
           <input type="search" aria-label="Search companies" placeholder="Search companies" value={q} onChange={(e) => setQ(e.target.value)} />

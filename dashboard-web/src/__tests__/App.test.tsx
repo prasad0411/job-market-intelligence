@@ -35,7 +35,8 @@ describe('dashboard', () => {
     expect(await screen.findByText('448,200')).toBeInTheDocument();
     expect(screen.getByText('664 per run across 675 runs')).toBeInTheDocument();
     expect(screen.getByText('30.6%')).toBeInTheDocument();
-    expect(await screen.findByText('Summer 2027')).toBeInTheDocument();
+    expect(await screen.findByText('Weekly ingest')).toBeInTheDocument();
+    expect(screen.queryByText('Why postings were filtered')).not.toBeInTheDocument();
   });
 
   it('filters postings through the API', async () => {
