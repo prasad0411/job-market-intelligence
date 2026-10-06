@@ -241,12 +241,15 @@ A React 19 and strict TypeScript app (`dashboard-web/`) over a read only FastAPI
 
 | View | What it shows |
 |---|---|
-| Overview | Postings evaluated, valid postings, sponsorship share, companies and run time; weekly ingest from the `fct_weekly_ingest` mart; why postings were filtered over the last 30 days |
-| Postings | Search plus source, type, sponsorship and remote filters with paging; keyboard review sessions (J and K move, S shortlists, X skips) that time every decision and compare it with a spreadsheet baseline |
+| Overview | Postings evaluated, noise filtered automatically, valid postings, sponsorship share, companies and median run time; where every posting went, by the first gate that stopped it; weekly ingest |
+| Market | Companies with open roles and how many sponsor H-1B, who is hiring most, top sponsors, role type, career track, top states and remote share, all computed from the same valid postings so the numbers agree |
+| Postings | Search plus source, type, sponsorship and remote filters with paging. Run locally, it adds keyboard review sessions (J and K move, S shortlists, X skips) that time every decision against a spreadsheet baseline |
 | Sources | Accepted versus quarantined rows and yield per source, from `fct_source_quality` |
 | Companies | Hiring activity and sponsorship share, from `dim_company` |
 
-![Postings and review sessions](docs/screenshots/dashboard-postings.png)
+![Market](docs/screenshots/dashboard-market.png)
+
+![Postings](docs/screenshots/dashboard-postings.png)
 
 **Engineering.** Reusable building blocks (a generic sortable `DataTable`, `StatCard`, `Panel`, column and bar charts), state in a Context plus `useReducer` store, and layouts that hold down to phone width. Every connection is read only: SQLite opens with `mode=ro` and DuckDB with `read_only=True`, and personal application outcomes are never queried. Charts read the dbt marts because they are tested; the postings list normalises values that historically arrived in shifted columns instead of dropping those rows. Vitest and React Testing Library cover the reducers, query building and full user flows; the API has its own pytest suite, and both run in CI.
 
