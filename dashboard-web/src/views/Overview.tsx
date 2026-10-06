@@ -13,6 +13,7 @@ export function Overview() {
   const weekly = useApi<WeekPoint[]>('/weekly');
   const funnel = useApi<FunnelRow[]>('/funnel?days=30');
   const pipeline = useApi<Stage[]>('/pipeline');
+  const written = pipeline.data?.find((p) => p.key === 'valid')?.count ?? null;
   const s = summary.data;
   return (
     <div className="stack">
@@ -20,10 +21,11 @@ export function Overview() {
       {s && (
         <div className="stats">
           <StatCard label="Postings evaluated" value={num(s.jobs_evaluated)} note={`${num(s.jobs_evaluated_per_run)} per run across ${num(s.runs)} runs`} />
+          <StatCard label="Noise filtered automatically" value={written !== null ? pct(1 - written / Math.max(1, s.jobs_evaluated)) : 'n/a'} note="duplicates, wrong season, non tech, senior, non US" />
           <StatCard label="Valid postings" value={num(s.valid_jobs)} note={`${num(s.remote_jobs)} remote`} />
-          <StatCard label="Sponsorship confirmed" value={pct(s.sponsored_share)} note="USCIS H-1B approvals" />
+          <StatCard label="Sponsorship confirmed" value={pct(s.sponsored_share)} note="of valid postings, from USCIS H-1B approvals" />
           <StatCard label="Companies tracked" value={num(s.companies)} note={`${num(s.sources)} sources`} />
-          <StatCard label="Average run" value={`${s.avg_run_minutes} min`} note="fully automated, 3 runs a day" />
+          <StatCard label="Median run" value={`${s.median_run_minutes} min`} note="fully automated, 3 runs a day" />
         </div>
       )}
       <Panel title="Where every posting went" subtitle="All postings the pipeline has evaluated, by the first gate that stopped them. Cheapest checks run first">

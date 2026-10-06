@@ -4,6 +4,7 @@ export interface Summary {
   jobs_evaluated: number;
   jobs_evaluated_per_run: number;
   avg_run_minutes: number;
+  median_run_minutes: number;
   valid_jobs: number;
   sponsored_share: number;
   remote_jobs: number;
@@ -26,6 +27,18 @@ export interface Stage { stage: string; key: string; count: number }
 export interface Run { ts: string; minutes: number; valid: number; discarded: number; failed_http: number }
 export interface QuarantineRow { family: string; reason: string; rows: number; share: number }
 export interface Meta { generated_at: string }
+export interface Count { label: string; count: number }
+export interface Insights {
+  valid_postings: number;
+  remote_share: number;
+  roles: Count[];
+  tracks: Count[];
+  states: Count[];
+  top_hiring: CompanyRow[];
+  companies_total: number;
+  companies_sponsoring: number;
+  top_sponsors: CompanyRow[];
+}
 export interface JobQuery { q: string; source: string; jobType: string; sponsored: boolean; remote: boolean; page: number }
 
 export const PAGE_SIZE = 25;

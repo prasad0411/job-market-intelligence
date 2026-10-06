@@ -105,3 +105,9 @@ def runs():
 def quarantine():
     with _open(_warehouse) as (w,):
         return queries.quarantine(w)
+
+
+@app.get("/insights")
+def insights():
+    with _open(lambda: _sqlite("analytics.db"), _warehouse) as (a, w):
+        return queries.insights(a, w)

@@ -29,6 +29,7 @@ def build(runs_con, analytics_con, warehouse_con) -> dict:
         "pipeline": queries.pipeline_funnel(runs_con),
         "runs": queries.runs(runs_con),
         "quarantine": queries.quarantine(warehouse_con),
+        "insights": queries.insights(analytics_con, warehouse_con),
         "meta": {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
     }
 

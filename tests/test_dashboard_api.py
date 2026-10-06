@@ -168,3 +168,20 @@ def _warehouse_stub():
     c.execute("create table main_marts.dim_company (company_display text)")
     c.execute("create table main_marts.fct_source_quality (source text)")
     return c
+
+
+def test_insights_market_views(analytics_con, warehouse_con):
+    analytics_con.execute("update jobs set location = 'Remote (US)' where company = 'Beta'")
+    i = queries.insights(analytics_con, warehouse_con)
+    assert i["valid_postings"] == 4
+    assert {r["label"]: r["count"] for r in i["roles"]} == {"Internship": 2, "Full Time": 1, "Other": 1}
+    assert {t["label"] for t in i["tracks"]} == {"Software engineering", "Machine learning", "Data and analytics"}
+    assert {s["label"]: s["count"] for s in i["states"]} == {"MA": 1, "Remote": 1}
+    assert i["companies_total"] == 2 and i["companies_sponsoring"] == 1
+    assert [c["company"] for c in i["top_sponsors"]] == ["Acme"]
+    assert i["remote_share"] == 0.25
+
+
+def test_median_run_minutes(runs_con):
+    assert queries.median_run_minutes(runs_con) == 35.0
+    assert queries.summary(runs_con, _analytics_stub(), _warehouse_stub())["median_run_minutes"] == 35.0

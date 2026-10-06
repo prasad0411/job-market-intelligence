@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { PAGE_SIZE, jobsPath, type Job, type JobPage } from '../api';
+import { PAGE_SIZE, STATIC_MODE, jobsPath, type Job, type JobPage } from '../api';
 import { DataTable, type ColumnDef } from '../components/DataTable';
 import { Notice } from '../components/Notice';
 import { ReviewBar } from '../components/ReviewBar';
@@ -67,7 +67,7 @@ export function Jobs() {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   return (
     <div className="stack">
-      <ReviewBar />
+      {!STATIC_MODE && <ReviewBar />}
       <form className="filters" role="search" onSubmit={(e) => e.preventDefault()}>
         <label className="field grow">
           <span>Search</span>

@@ -2,15 +2,13 @@ import { useEffect, useState } from 'react';
 import { Companies } from './views/Companies';
 import { Jobs } from './views/Jobs';
 import { Overview } from './views/Overview';
-import { Reliability } from './views/Reliability';
-import { STATIC_MODE, type Meta } from './api';
-import { useApi } from './state/useApi';
+import { Market } from './views/Market';
 import { Sources } from './views/Sources';
 
 const TABS = [
   { id: 'overview', label: 'Overview', view: Overview },
+  { id: 'market', label: 'Market', view: Market },
   { id: 'jobs', label: 'Postings', view: Jobs },
-  { id: 'reliability', label: 'Reliability', view: Reliability },
   { id: 'sources', label: 'Sources', view: Sources },
   { id: 'companies', label: 'Companies', view: Companies },
 ] as const;
@@ -29,7 +27,6 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
   const View = TABS.find((t) => t.id === tab)!.view;
-  const meta = useApi<Meta>(STATIC_MODE ? '/meta' : null);
   return (
     <div className="app">
       <header className="appbar">
@@ -51,12 +48,6 @@ export default function App() {
         </div>
       </header>
       <main className="page">
-        {STATIC_MODE && meta.data && (
-          <p className="snapshot">
-            Live snapshot of the pipeline, updated {new Date(meta.data.generated_at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}.{' '}
-            <a href="https://github.com/prasad0411/job-market-intelligence">Source and architecture on GitHub</a>
-          </p>
-        )}
         <View />
       </main>
     </div>

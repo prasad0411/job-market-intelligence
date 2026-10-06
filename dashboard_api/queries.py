@@ -49,6 +49,7 @@ def summary(runs_con, analytics_con, warehouse_con) -> dict:
         "jobs_evaluated": evaluated,
         "jobs_evaluated_per_run": round(evaluated / n) if n else 0,
         "avg_run_minutes": round(float(avg_s or 0) / 60, 1),
+        "median_run_minutes": median_run_minutes(runs_con),
         "valid_jobs": int(jobs_valid or 0),
         "sponsored_share": round(int(sponsored or 0) / jobs_valid, 4) if jobs_valid else 0.0,
         "remote_jobs": int(remote or 0),
@@ -175,3 +176,61 @@ def quarantine(warehouse_con) -> list[dict]:
     rows = _rows(warehouse_con, "select reason_family, quarantine_reason, rejected_rows, share_of_rejected "
                                 "from main_marts.fct_rejection_funnel order by rejected_rows desc")
     return [{"family": f, "reason": r, "rows": int(n or 0), "share": float(s or 0)} for f, r, n, s in rows]
+
+
+US_STATES = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY",
+    "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH",
+    "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+}
+_STATE = re.compile(r",\s*([A-Z]{2})\b")
+
+
+def _state_of(location: str) -> str | None:
+    loc = str(location or "")
+    if "remote" in loc.lower():
+        return "Remote"
+    m = _STATE.search(loc)
+    return m.group(1) if m and m.group(1) in US_STATES else None
+
+
+def insights(analytics_con, warehouse_con) -> dict:
+    """Market level views of the valid postings and the companies behind them."""
+    role, track, states = {}, {}, {}
+    total = remote = 0
+    for job_type, resume_type, location, is_remote in _rows(
+            analytics_con, "select job_type, resume_type, location, is_remote from jobs where outcome = 'valid'"):
+        total += 1
+        remote += 1 if is_remote == 1 else 0
+        r = job_type if job_type in JOB_TYPES else "Other"
+        role[r] = role.get(r, 0) + 1
+        t = resume_type if resume_type in ("SDE", "ML", "DA") else "Other"
+        track[t] = track.get(t, 0) + 1
+        st = _state_of(location)
+        if st:
+            states[st] = states.get(st, 0) + 1
+
+    named = [c for c in companies(warehouse_con, limit=100000)]
+    sponsoring = [c for c in named if c["sponsored"] > 0]
+    order = lambda d: [{"label": k, "count": v} for k, v in sorted(d.items(), key=lambda kv: -kv[1])]
+    track_names = {"SDE": "Software engineering", "ML": "Machine learning", "DA": "Data and analytics", "Other": "Other"}
+    return {
+        "valid_postings": total,
+        "remote_share": round(remote / total, 4) if total else 0.0,
+        "roles": order(role),
+        "tracks": [{"label": track_names[x["label"]], "count": x["count"]} for x in order(track)],
+        "states": order(states)[:12],
+        "top_hiring": named[:10],
+        "companies_total": len(named),
+        "companies_sponsoring": len(sponsoring),
+        "top_sponsors": sorted(sponsoring, key=lambda c: -c["sponsored"])[:10],
+    }
+
+
+def median_run_minutes(runs_con) -> float:
+    vals = sorted(float(e or 0) for (e,) in _rows(runs_con, "select elapsed_seconds from runs"))
+    if not vals:
+        return 0.0
+    mid = len(vals) // 2
+    med = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+    return round(med / 60, 1)

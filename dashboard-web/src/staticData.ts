@@ -51,7 +51,7 @@ export function filterCompanies(all: CompanyRow[], p: URLSearchParams): CompanyR
 
 const FILES: Record<string, string> = {
   '/summary': 'summary', '/weekly': 'weekly', '/sources': 'sources', '/funnel': 'funnel',
-  '/job-sources': 'job_sources', '/pipeline': 'pipeline', '/runs': 'runs', '/quarantine': 'quarantine', '/meta': 'meta',
+  '/job-sources': 'job_sources', '/pipeline': 'pipeline', '/runs': 'runs', '/quarantine': 'quarantine', '/meta': 'meta', '/insights': 'insights',
 };
 
 export async function resolveStatic<T>(path: string, fetchImpl: typeof fetch = fetch): Promise<T> {

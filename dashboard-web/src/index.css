@@ -130,3 +130,5 @@ input[type='search'], input[type='number'], select { font: inherit; padding: 0.4
 .funnel-legend small { color: var(--ink-faint); text-align: right; }
 .funnel-valid { color: var(--good); font-weight: 600; }
 .snapshot { margin: 0 0 1.1rem; font-size: 0.82rem; color: var(--ink-faint); }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.25rem; }
+@media (max-width: 1000px) { .grid-3 { grid-template-columns: minmax(0, 1fr); } }
