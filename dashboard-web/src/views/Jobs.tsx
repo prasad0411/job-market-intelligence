@@ -40,6 +40,10 @@ export function Jobs() {
     { key: 'location', header: 'Location', render: (j) => j.location },
     { key: 'type', header: 'Type', render: (j) => j.job_type, sortValue: (j) => j.job_type },
     {
+      key: 'added', header: 'Added', sortValue: (j) => j.entry_date ?? '',
+      render: (j) => j.entry_date ? new Date(`${j.entry_date}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '',
+    },
+    {
       key: 'tags', header: 'Signals', render: (j) => (
         <span className="tags">
           {j.sponsored && <span className="tag tag-good">Sponsors H-1B</span>}

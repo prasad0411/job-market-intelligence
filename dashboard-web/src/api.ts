@@ -21,6 +21,7 @@ export interface CompanyRow {
 export interface Job {
   id: number; company: string; title: string; location: string; source: string; url: string;
   job_type: string; remote: boolean; sponsored: boolean; track: string;
+  entry_date?: string | null;
 }
 export interface JobPage { total: number; items: Job[] }
 export interface Stage { stage: string; key: string; count: number }
