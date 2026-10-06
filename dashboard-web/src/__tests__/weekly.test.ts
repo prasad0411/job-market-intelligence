@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isoWeekStart, niceTicks, summarize, weekLabel } from '../weekly';
+import { isPartialWeek, isoWeekStart, niceTicks, summarize, weekLabel } from '../weekly';
 
 const wk = (week: string, postings: number, valid: number) => ({ week, postings, valid, sponsored: 0, sources: 1 });
 
@@ -19,11 +19,19 @@ describe('weekly chart helpers', () => {
 
   it('summarizes totals, busiest week and recent change', () => {
     const data = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => wk(`2026-W${String(n + 10).padStart(2, '0')}`, n * 100, n * 10));
-    const s = summarize(data);
+    const s = summarize(data, new Date('2026-12-01T00:00:00Z'));
     expect(s.postings).toBe(3600);
     expect(s.valid).toBe(360);
     expect(s.busiest?.week).toBe('2026-W18');
     expect(s.recentChange).toBeCloseTo((260 - 100) / 100, 5);
     expect(summarize(data.slice(0, 3)).recentChange).toBeNull();
+  });
+
+  it('ignores an in progress week when comparing recent weeks', () => {
+    const data = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => wk(`2026-W${String(n + 32).padStart(2, '0')}`, n * 100, n * 10));
+    const now = new Date('2026-10-06T12:00:00Z'); // inside 2026-W41
+    expect(isPartialWeek('2026-W41', now)).toBe(true);
+    expect(isPartialWeek('2026-W40', now)).toBe(false);
+    expect(summarize(data, now).recentChange).toBeCloseTo((260 - 100) / 100, 5);
   });
 });

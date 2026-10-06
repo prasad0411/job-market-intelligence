@@ -156,3 +156,10 @@ input[type='search'], input[type='number'], select { font: inherit; padding: 0.4
 .weekly-tip strong { font-size: 0.85rem; }
 .swatch.valid { background: var(--primary); }
 .swatch.filtered { background: color-mix(in srgb, var(--primary) 28%, transparent); }
+.weekly-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.weekly-head .weekly-summary { margin: 0; }
+.segmented { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
+.segmented button { border: none; border-radius: 0; padding: 0.35rem 0.75rem; font-size: 0.8rem; background: var(--surface); }
+.segmented button + button { border-left: 1px solid var(--line-strong); }
+.segmented button[aria-pressed='true'] { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+.weekly-plot g.partial .seg-valid, .weekly-plot g.partial .seg-filtered { opacity: 0.55; }
