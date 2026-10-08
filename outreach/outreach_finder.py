@@ -5,6 +5,7 @@ import os
 import re, time, logging, json, requests
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as _FuturesTimeout
 OVERRIDES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.local', 'domain_overrides.json')
 RETRY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.local', 'retry_tracker.json')
 
@@ -696,22 +697,35 @@ class Finder:
         def chk(e):
             return e, self._verify(e)
 
-        with ThreadPoolExecutor(max_workers=REACHER_WORKERS) as ex:
+        # as_completed had no timeout, and the context manager calls
+        # shutdown(wait=True) on exit, so one stuck worker blocked the main
+        # thread indefinitely. That accounts for 51 of 53 timeout kills:
+        # send_scheduled sat here with 900s active, 0s slept and 2s cpu.
+        _PAR_BUDGET = 60.0
+        ex = ThreadPoolExecutor(max_workers=REACHER_WORKERS)
+        try:
             futs = {ex.submit(chk, e): e for e in emails}
-            for fut in as_completed(futs):
-                if stop:
-                    break
-                try:
-                    e, v = fut.result()
-                    if v == "safe":
-                        valid.append(e)
-                        stop = True
-                    elif v == "risky":
-                        risky.append(e)
-                except Exception as _e:
-                    from aggregator.swallowed import swallow as _s; _s('outreach_finder._par', _e)
+            try:
+                for fut in as_completed(futs, timeout=_PAR_BUDGET):
+                    if stop:
+                        break
+                    try:
+                        e, v = fut.result()
+                        if v == "safe":
+                            valid.append(e)
+                            stop = True
+                        elif v == "risky":
+                            risky.append(e)
+                    except Exception as _e:
+                        from aggregator.swallowed import swallow as _s; _s('outreach_finder._par', _e)
+            except _FuturesTimeout:
+                log.warning("Reacher batch exceeded %.0fs, using the %d "
+                            "verified so far", _PAR_BUDGET, len(valid) + len(risky))
             for f in futs:
                 f.cancel()
+        finally:
+            # wait=False: a stuck worker must not hold up the caller.
+            ex.shutdown(wait=False, cancel_futures=True)
         if len(valid) == 1:
             return {
                 "email": valid[0],
