@@ -51,8 +51,11 @@ def test_prepare_tables_types_dates_for_partitioning():
     snap = {"jobs": [{"id": 1, "entry_date": "2026-10-05", "source": "SWE List"},
                      {"id": 2, "entry_date": None, "source": "Indeed"}],
             "weekly": [{"week": "2026-W41", "postings": 3}], "companies": [], "sources": []}
-    t = bq_load.prepare_tables(snap)
-    assert set(t) == {"postings", "weekly_ingest", "companies", "sources"}
+    from datetime import date
+    t = bq_load.prepare_tables(snap, date(2026, 10, 8))
+    assert set(t) == {"postings", "postings_history", "weekly_ingest", "companies", "sources"}
+    assert (t["postings_history"]["snapshot_date"] == date(2026, 10, 8)).all()
+    assert len(t["postings_history"]) == len(t["postings"])
     assert str(t["postings"].loc[0, "entry_date"]) == "2026-10-05"
     assert t["postings"]["entry_date"].isna().sum() == 1
 

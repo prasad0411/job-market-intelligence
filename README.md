@@ -262,7 +262,7 @@ cd dashboard-web && npm ci && npm run dev                         # http://local
 
 The service account key that reads the Google Sheet lives in **GCP Secret Manager**, not in the repo or a file the job depends on. The nightly publish reads it at runtime with Application Default Credentials and least privilege access, falling back to the local key only if Secret Manager is unreachable (`dashboard_api/gcp_secrets.py`).
 
-Every nightly snapshot is also loaded into **BigQuery** (dataset `jmi`): `postings` is partitioned by entry date and clustered by source, so date filtered queries scan only the days they need. Loads replace each table, so reruns are idempotent, and a BigQuery failure never blocks the public site (`dashboard_api/bq_load.py`).
+Every nightly snapshot is also loaded into **BigQuery** (dataset `jmi`). The Sheet only holds what is in the tracker today, because expired postings are moved out; BigQuery keeps the history. `postings_history` stores one row per posting per night, partitioned by snapshot date and clustered by company, which answers questions the Sheet cannot, such as how many days a posting stays open and whether sponsorship is rising over time. Rerunning a night replaces only that night's rows, so loads are idempotent, and a BigQuery failure never blocks the public site (`dashboard_api/bq_load.py`).
 
 ## TypeScript ingestion
 
