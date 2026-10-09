@@ -13,7 +13,7 @@ echo "[$(date '+%F %T')] publish_dashboard start"
 
 mkdir -p dashboard-web/public
 rm -rf dashboard-web/public/data
-./venv/bin/python -m dashboard_api.export_snapshot dashboard-web/public/data
+./venv/bin/python -m dashboard_api.export_snapshot dashboard-web/public/data --bigquery
 (cd dashboard-web && VITE_DATA_MODE=static npm run build -- --base="$BASE" >/dev/null)
 
 SITE=$(mktemp -d)

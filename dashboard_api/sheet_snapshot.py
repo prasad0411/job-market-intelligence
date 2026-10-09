@@ -218,5 +218,10 @@ class _NoMarts(_Empty):
 def read_sheet(credentials: str = ".local/credentials.json") -> tuple[list[list[str]], list[list[str]]]:
     import gspread
     from aggregator.config import SHEET_NAME
-    sh = gspread.service_account(filename=credentials).open(SHEET_NAME)
+    from dashboard_api.gcp_secrets import service_account_info
+    if hasattr(gspread, "service_account_from_dict"):
+        gc = gspread.service_account_from_dict(service_account_info(credentials))
+    else:
+        gc = gspread.service_account(filename=credentials)
+    sh = gc.open(SHEET_NAME)
     return sh.worksheet(VALID_SHEET).get_all_values(), sh.worksheet(DISCARD_SHEET).get_all_values()

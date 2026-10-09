@@ -44,7 +44,7 @@ def write(snapshot: dict, out: Path) -> list[Path]:
     return written
 
 
-def main(out_dir: str, source: str = "sheet") -> None:
+def main(out_dir: str, source: str = "sheet", bigquery: bool = False) -> None:
     """source "sheet" (default for the public site) reads the live Google Sheet; "local" reads analytics.db."""
     runs_con = sqlite3.connect(f"file:{LOCAL}/run_history.db?mode=ro", uri=True)
     try:
@@ -65,11 +65,16 @@ def main(out_dir: str, source: str = "sheet") -> None:
     finally:
         runs_con.close()
     files = write(snap, Path(out_dir))
+    if bigquery:
+        from dashboard_api.bq_load import load_snapshot
+        load_snapshot(snap)
     total = sum(f.stat().st_size for f in files)
     print(f"wrote {len(files)} files, {total / 1e6:.1f} MB, to {out_dir} (source: {source})")
 
 
 if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO, format="  %(message)s")
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     src = "local" if "--local" in sys.argv else "sheet"
-    main(args[0] if args else "dashboard-web/public/data", src)
+    main(args[0] if args else "dashboard-web/public/data", src, bigquery="--bigquery" in sys.argv)
