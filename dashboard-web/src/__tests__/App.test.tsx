@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from '../App';
-import { StoreProvider } from '../state/StoreProvider';
+import { Provider } from 'react-redux';
+import { makeStore } from '../store';
 
 const SUMMARY = { runs: 675, last_run: '2026-10-06', jobs_evaluated: 448200, jobs_evaluated_per_run: 664, avg_run_minutes: 37.2,
   valid_jobs: 1614, sponsored_share: 0.3055, remote_jobs: 240, companies: 3331, sources: 37 };
@@ -24,7 +25,7 @@ function routeFetch() {
   });
 }
 
-const renderApp = () => render(<StoreProvider><App /></StoreProvider>);
+const renderApp = () => render(<Provider store={makeStore()}><App /></Provider>);
 
 describe('dashboard', () => {
   beforeEach(() => vi.restoreAllMocks());

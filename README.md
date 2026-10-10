@@ -251,7 +251,7 @@ A React 19 and strict TypeScript app (`dashboard-web/`) over a read only FastAPI
 
 ![Postings](docs/screenshots/dashboard-postings.png)
 
-**Engineering.** Reusable building blocks (a generic sortable `DataTable`, `StatCard`, `Panel`, column and bar charts), state in a Context plus `useReducer` store, and layouts that hold down to phone width. Every connection is read only: SQLite opens with `mode=ro` and DuckDB with `read_only=True`, and personal application outcomes are never queried. Charts read the dbt marts because they are tested; the postings list normalises values that historically arrived in shifted columns instead of dropping those rows. Vitest and React Testing Library cover the reducers, query building and full user flows; the API has its own pytest suite, and both run in CI.
+**Engineering.** Reusable building blocks (a generic sortable `DataTable`, `StatCard`, `Panel`, column and bar charts), app state in a Redux Toolkit store (slices for filters and review sessions, typed hooks, memoised selectors with `createSelector`), with the reducer rules kept as pure, unit tested functions, and layouts that hold down to phone width. Every connection is read only: SQLite opens with `mode=ro` and DuckDB with `read_only=True`, and personal application outcomes are never queried. Charts read the dbt marts because they are tested; the postings list normalises values that historically arrived in shifted columns instead of dropping those rows. Vitest and React Testing Library cover the reducers, query building and full user flows; the API has its own pytest suite, and both run in CI.
 
 ```bash
 ./venv/bin/python -m uvicorn dashboard_api.app:app --port 8001   # API

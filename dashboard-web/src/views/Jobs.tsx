@@ -5,12 +5,16 @@ import { Notice } from '../components/Notice';
 import { ReviewBar } from '../components/ReviewBar';
 import { num } from '../format';
 import { useApi } from '../state/useApi';
-import { useStore } from '../state/useStore';
+import { selectFilters, selectReview, useAppDispatch, useAppSelector } from '../store';
+import { resetFilters, setFilters, setPage } from '../store/filtersSlice';
+import { decide as decideAction } from '../store/reviewSlice';
 
 const TYPES = ['Internship', 'Full Time', 'Co-op'];
 
 export function Jobs() {
-  const { filters, dispatchFilters, review, dispatchReview } = useStore();
+  const filters = useAppSelector(selectFilters);
+  const review = useAppSelector(selectReview);
+  const dispatch = useAppDispatch();
   const page = useApi<JobPage>(jobsPath(filters));
   const sources = useApi<{ source: string; count: number }[]>('/job-sources');
   const [cursor, setCursor] = useState(0);
@@ -18,9 +22,9 @@ export function Jobs() {
   const activeId = review.active ? items[Math.min(cursor, items.length - 1)]?.id ?? null : null;
 
   const decide = useCallback((id: number, decision: 'shortlist' | 'skip') => {
-    dispatchReview({ type: 'decide', id, decision });
+    dispatch(decideAction({ id, decision }));
     setCursor((c) => Math.min(c + 1, Math.max(0, items.length - 1)));
-  }, [dispatchReview, items.length]);
+  }, [dispatch, items.length]);
 
   useEffect(() => {
     if (!review.active) return;
@@ -75,31 +79,31 @@ export function Jobs() {
       <form className="filters" role="search" onSubmit={(e) => e.preventDefault()}>
         <label className="field grow">
           <span>Search</span>
-          <input type="search" placeholder="Company or role" value={filters.q} onChange={(e) => dispatchFilters({ type: 'set', patch: { q: e.target.value } })} />
+          <input type="search" placeholder="Company or role" value={filters.q} onChange={(e) => dispatch(setFilters({ q: e.target.value }))} />
         </label>
         <label className="field">
           <span>Source</span>
-          <select value={filters.source} onChange={(e) => dispatchFilters({ type: 'set', patch: { source: e.target.value } })}>
+          <select value={filters.source} onChange={(e) => dispatch(setFilters({ source: e.target.value }))}>
             <option value="">All sources</option>
             {sources.data?.map((s) => <option key={s.source} value={s.source}>{s.source} ({num(s.count)})</option>)}
           </select>
         </label>
         <label className="field">
           <span>Type</span>
-          <select value={filters.jobType} onChange={(e) => dispatchFilters({ type: 'set', patch: { jobType: e.target.value } })}>
+          <select value={filters.jobType} onChange={(e) => dispatch(setFilters({ jobType: e.target.value }))}>
             <option value="">All types</option>
             {TYPES.map((t) => <option key={t}>{t}</option>)}
           </select>
         </label>
         <label className="check">
-          <input type="checkbox" checked={filters.sponsored} onChange={(e) => dispatchFilters({ type: 'set', patch: { sponsored: e.target.checked } })} />
+          <input type="checkbox" checked={filters.sponsored} onChange={(e) => dispatch(setFilters({ sponsored: e.target.checked }))} />
           Sponsors H-1B
         </label>
         <label className="check">
-          <input type="checkbox" checked={filters.remote} onChange={(e) => dispatchFilters({ type: 'set', patch: { remote: e.target.checked } })} />
+          <input type="checkbox" checked={filters.remote} onChange={(e) => dispatch(setFilters({ remote: e.target.checked }))} />
           Remote
         </label>
-        <button type="button" onClick={() => dispatchFilters({ type: 'reset' })}>Clear</button>
+        <button type="button" onClick={() => dispatch(resetFilters())}>Clear</button>
       </form>
       <Notice error={page.error} loading={page.loading && !page.data} />
       <p className="result-count" aria-live="polite">{page.data ? `${num(total)} matching postings` : '\u00a0'}</p>
@@ -107,9 +111,9 @@ export function Jobs() {
         <DataTable rows={items} columns={columns} rowKey={(j) => j.id} caption="Valid postings" activeKey={activeId} empty="No postings match these filters" />
       )}
       <nav className="pager" aria-label="Pages">
-        <button type="button" disabled={filters.page === 0} onClick={() => dispatchFilters({ type: 'page', page: filters.page - 1 })}>Previous</button>
+        <button type="button" disabled={filters.page === 0} onClick={() => dispatch(setPage(filters.page - 1))}>Previous</button>
         <span>Page {filters.page + 1} of {num(pages)}</span>
-        <button type="button" disabled={filters.page + 1 >= pages} onClick={() => dispatchFilters({ type: 'page', page: filters.page + 1 })}>Next</button>
+        <button type="button" disabled={filters.page + 1 >= pages} onClick={() => dispatch(setPage(filters.page + 1))}>Next</button>
       </nav>
     </div>
   );

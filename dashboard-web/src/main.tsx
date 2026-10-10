@@ -1,13 +1,14 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
-import { StoreProvider } from './state/StoreProvider';
+import { Provider } from 'react-redux';
+import { makeStore } from './store';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <StoreProvider>
+    <Provider store={makeStore()}>
       <App />
-    </StoreProvider>
+    </Provider>
   </StrictMode>,
 );
