@@ -3,7 +3,7 @@ name: dashboard
 on:
   push:
     branches: [main]
-    paths: ["dashboard-web/**", "dashboard_api/**", ".github/workflows/dashboard.yml"]
+    paths: ["dashboard-web/**", "dashboard_api/**", "docker-compose.dashboard.yml", ".github/workflows/dashboard.yml"]
   pull_request:
 
 jobs:
@@ -23,3 +23,39 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+
+  images:
+    needs: web
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build and start the stack
+        run: |
+          mkdir -p .local
+          docker compose -f docker-compose.dashboard.yml up -d --build --wait
+
+      - name: Smoke test through nginx
+        run: |
+          curl -fsS http://localhost:8095/ | grep -q "<div id=\"root\">"
+          curl -fsS http://localhost:8095/api/health | grep -q '"ok"'
+          echo "web and api healthy"
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.dashboard.yml logs
+
+      - name: Push images to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for svc in web api; do
+            img="ghcr.io/${{ github.repository_owner }}/jmi-dashboard-$svc"
+            docker tag "jmi-dashboard-$svc:local" "$img:latest"
+            docker tag "jmi-dashboard-$svc:local" "$img:${{ github.sha }}"
+            docker push "$img:latest"
+            docker push "$img:${{ github.sha }}"
+          done

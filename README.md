@@ -264,6 +264,14 @@ The service account key that reads the Google Sheet lives in **GCP Secret Manage
 
 Every nightly snapshot is also loaded into **BigQuery** (dataset `jmi`). The Sheet only holds what is in the tracker today, because expired postings are moved out; BigQuery keeps the history. `postings_history` stores one row per posting per night, partitioned by snapshot date and clustered by company, which answers questions the Sheet cannot, such as how many days a posting stays open and whether sponsorship is rising over time. Rerunning a night replaces only that night's rows, so loads are idempotent, and a BigQuery failure never blocks the public site (`dashboard_api/bq_load.py`).
 
+**Run the full stack with Docker** (the React app behind nginx, plus the read only API over your local pipeline data):
+
+```bash
+docker compose -f docker-compose.dashboard.yml up --build    # http://localhost:8095
+```
+
+Both images run as non root users with health checks. CI builds them, starts the stack, smoke tests the app and the API through nginx, and pushes the images to GitHub Container Registry.
+
 ## TypeScript ingestion
 
 `ingest-ts/` is a Node and strict TypeScript service that pulls entry level and internship roles from The Muse and remote software and data roles from Remotive. Requests retry with exponential backoff on 429 and 5xx responses, each source fails independently, and records are deduplicated by URL before being written as JSON lines.
