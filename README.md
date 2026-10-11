@@ -3,14 +3,14 @@
 [![CI](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ci.yml)
 [![dashboard](https://github.com/prasad0411/job-market-intelligence/actions/workflows/dashboard.yml/badge.svg)](https://github.com/prasad0411/job-market-intelligence/actions/workflows/dashboard.yml)
 [![ingest-ts](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ingest-ts.yml/badge.svg)](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ingest-ts.yml)
-[![Tests](https://img.shields.io/badge/tests-261_passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-323_passing-brightgreen)](tests/)
 [![Preflight](https://img.shields.io/badge/preflight-19_wiring_checks-blue)](aggregator/preflight.py)
 [![dbt](https://img.shields.io/badge/dbt-35_data_tests-FF694B?logo=dbt&logoColor=white)](data_platform/dbt/)
 [![Python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
-[![Sources](https://img.shields.io/badge/sources-21_feeds_·_1117_ATS_boards-orange)]()
+[![Sources](https://img.shields.io/badge/sources-29_·_1000%2B_ATS_boards-orange)](#data-sources)
 
 A self-maintaining data platform that aggregates early-career software engineering
-roles from 21 tracked feeds and 1,117 discovered applicant-tracking-system boards —
+roles from 21 tracked feeds and over 1,000 discovered applicant-tracking-system boards —
 then deduplicates, validates, enriches with official H-1B sponsorship data, and
 lands the survivors in both a tracked spreadsheet and a partitioned analytics
 lakehouse, three times a day.
@@ -43,7 +43,7 @@ below follows from taking that seriously.
 flowchart TD
     subgraph INGEST["Ingest"]
         A1["12 GitHub feeds<br/>markdown + HTML tables"]
-        A2["871 ATS boards<br/>Greenhouse · Lever · Ashby<br/>Workday · SmartRecruiters<br/>Workable · Rippling"]
+        A2["1,000+ ATS boards<br/>Greenhouse · Lever · Ashby<br/>Workday · SmartRecruiters<br/>Workable · Rippling"]
         A3["Indeed<br/>6 targeted queries"]
         A4["Email<br/>LinkedIn · Jobright alerts"]
     end
@@ -57,7 +57,7 @@ flowchart TD
     end
 
     subgraph ENRICH["Enrich"]
-        C1["ATS resolver<br/>871 boards → real apply URL"]
+        C1["ATS resolver<br/>1,000+ boards → real apply URL"]
         C2["H-1B lookup<br/>121,935 USCIS employers"]
         C3["Quality scorer<br/>rejects shifted rows"]
     end
@@ -93,9 +93,9 @@ analytics. Both run from the same repo.
 ```mermaid
 flowchart LR
     subgraph ingest["Ingestion"]
-        A["21 job feeds<br/>1,117 ATS boards"] --> B["Scrapers<br/>Selenium · REST"]
+        A["21 job feeds<br/>1,000+ ATS boards"] --> B["Scrapers<br/>Selenium · REST"]
         B --> C["Validation<br/>dedup · enrichment"]
-        C --> D[("analytics.db<br/>16.2K jobs")]
+        C --> D[("analytics.db")]
         C --> E["Google Sheets<br/>tracked rows"]
     end
 
@@ -227,7 +227,7 @@ airflow dags test medallion_pipeline 2026-09-15
 ATS board counts grow on their own. `ats_discovery` inspects every URL the
 pipeline has processed, identifies boards it has not seen, probes their API, and
 appends the working ones to `brain.json`. The hardcoded starting set was 263
-companies; discovery has taken it to 871 without manual curation.
+companies; discovery has taken it past 1,000 without manual curation.
 
 ---
 
@@ -303,7 +303,7 @@ override it.
 
 | Tier | Signal | Confidence |
 |---|---|---|
-| 1 | Normalised `job_id` against a 1,243-entry registry | certain |
+| 1 | Normalised `job_id` against a 2,288-entry registry | certain |
 | 2 | Canonical URL — **only when the URL identifies one posting** | certain |
 | 3 | Company + title, with legal-suffix normalisation | high |
 | 4 | TF-IDF cosine ≥ 0.90, guarded by a discriminator | low |
@@ -479,7 +479,7 @@ never leave the machine.
 ```bash
 python3 -m aggregator.run_aggregator     # full pipeline
 python3 -m aggregator.preflight          # wiring check, standalone
-python3 -m pytest tests/                 # 250 tests
+python3 -m pytest tests/                 # 294 tests
 python3 scripts/status.py                # current state
 ```
 
@@ -510,7 +510,7 @@ aggregator/
   direct_sources.py     7 ATS platform scrapers
   extractors.py         feed parsing, HTTP cache
   processors.py         title/location/validation helpers
-  preflight.py          12 wiring checks
+  preflight.py          19 wiring checks
   h1b_data.py           USCIS sponsorship lookup
   term_filter.py        Summer-2027 filter, fail-open
   job_age.py            ATS date extraction
@@ -531,14 +531,14 @@ dashboard-web/          React + TypeScript dashboard
 ingest-ts/              TypeScript ingestion service (The Muse, Remotive)
 analytics/              ETL, anomaly detection, title similarity
 outreach/               email discovery, verification, sending
-tests/                  250 tests, 17 of them wiring-specific
+tests/                  294 tests, 29 of them wiring-specific
 ```
 
 ---
 
 ## Testing philosophy
 
-250 tests, but the count is not the point. The suite previously passed at 265
+294 tests, but the count is not the point. The suite previously passed at 265
 tests while a date filter was accepting months-old postings — because those tests
 asserted that code *existed* rather than that it *worked*.
 
@@ -563,14 +563,14 @@ preflight itself being demonstrably capable of detecting an injected bug.
 
 | | |
 |---|---:|
-| Python | 84 files · 38,438 lines |
-| Sources | 12 feeds · 871 ATS boards · Indeed |
-| Jobs evaluated per run | ~5,000 |
+| Python | 116 files · 46,168 lines |
+| Sources | 29, including 7 ATS platforms covering 1,000+ boards, Indeed, GitHub lists and the USCIS H-1B data hub |
+| Jobs evaluated | 211,130 across 686 runs |
 | Sponsorship dataset | 121,935 employers, FY2022–2026 |
-| Job ID registry | 1,243 |
+| Job ID registry | 2,288 |
 | Scheduled jobs | 13 |
-| Preflight checks | 12 |
-| Tests | 250 |
+| Preflight checks | 19 |
+| Tests | 323: 294 Python, 20 dashboard, 9 TypeScript ingestion |
 
 ---
 
