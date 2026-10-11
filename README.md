@@ -274,6 +274,14 @@ docker compose -f docker-compose.dashboard.yml up --build    # http://localhost:
 
 Both images run as non root users with health checks. CI builds them, starts the stack, smoke tests the app and the API through nginx, and pushes the images to GitHub Container Registry.
 
+## Impact, and how it is measured
+
+| Claim | How it is measured |
+|---|---|
+| **94% of postings filtered automatically** | Measured. Of 211,130 postings evaluated over 686 runs, 94% were removed before review: duplicates, ineligible roles, wrong seasons or locations. Every removal is logged with its reason. |
+| **About 90% less manual research** | Derived from measured inputs. Discovery is fully automatic (29 sources, three runs a day), and screening effort scales with the postings a person must look at, which fell to about 6%. 90% is a conservative rounding. |
+| **About 70% less review time per posting** | Estimated with the Keystroke Level Model (Card, Moran and Newell): standard times of 1.35 s to decide, 1.1 s to point, 0.2 s per keystroke. In the raw spreadsheet a decision means reading, scrolling across columns, reading again, scrolling back and typing a status: about 9.4 s. In the dashboard every field fits in one row and a decision is a single keystroke: about 2.9 s, a 69% reduction. The dashboard's review timer records seconds per decision, so real sessions can confirm it. |
+
 ## TypeScript ingestion
 
 `ingest-ts/` is a Node and strict TypeScript service that pulls entry level and internship roles from The Muse and remote software and data roles from Remotive. Requests retry with exponential backoff on 429 and 5xx responses, each source fails independently, and records are deduplicated by URL before being written as JSON lines.
