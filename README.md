@@ -264,6 +264,8 @@ The service account key that reads the Google Sheet lives in **GCP Secret Manage
 
 Every nightly snapshot is also loaded into **BigQuery** (dataset `jmi`). The Sheet only holds what is in the tracker today, because expired postings are moved out; BigQuery keeps the history. `postings_history` stores one row per posting per night, partitioned by snapshot date and clustered by company, which answers questions the Sheet cannot, such as how many days a posting stays open and whether sponsorship is rising over time. Rerunning a night replaces only that night's rows, so loads are idempotent, and a BigQuery failure never blocks the public site (`dashboard_api/bq_load.py`).
 
+Each dashboard view renders inside a React error boundary, so a failure in one view shows a short message with a retry button instead of a blank page, and switching tabs resets it.
+
 **Run the full stack with Docker** (the React app behind nginx, plus the read only API over your local pipeline data):
 
 ```bash

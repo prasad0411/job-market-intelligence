@@ -163,3 +163,6 @@ input[type='search'], input[type='number'], select { font: inherit; padding: 0.4
 .segmented button + button { border-left: 1px solid var(--line-strong); }
 .segmented button[aria-pressed='true'] { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
 .weekly-plot g.partial .seg-valid, .weekly-plot g.partial .seg-filtered { opacity: 0.55; }
+
+.boundary { display: flex; gap: 1rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.boundary p { margin: 0; }

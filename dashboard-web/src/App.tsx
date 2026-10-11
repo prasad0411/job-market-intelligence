@@ -1,3 +1,4 @@
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { useEffect, useState } from 'react';
 import { Companies } from './views/Companies';
 import { Jobs } from './views/Jobs';
@@ -48,7 +49,9 @@ export default function App() {
         </div>
       </header>
       <main className="page">
-        <View />
+        <ErrorBoundary key={tab} label={`the ${TABS.find((t) => t.id === tab)!.label.toLowerCase()} view`}>
+          <View />
+        </ErrorBoundary>
       </main>
     </div>
   );
