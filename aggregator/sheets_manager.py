@@ -1162,6 +1162,12 @@ class SheetsManager:
         loc = _loc_re.sub(r'<[^>]+>', ' ', loc).strip()
         loc = _loc_re.sub(r'\s+', ' ', loc).strip()
 
+        # Drop empty comma segments. zapplyjobs emits "United States," and
+        # "United States, CA, ," where a field was missing, which reached the
+        # sheet verbatim: 11 of 15 malformed locations were just this.
+        if "," in loc:
+            loc = ", ".join(p for p in (x.strip() for x in loc.split(",")) if p)
+
         # If location has multiple cities separated by space (from HTML), take the first
         if ' Remote' in loc and ',' in loc:
             loc = loc.split(' Remote')[0].strip()
