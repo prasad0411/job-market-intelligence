@@ -516,9 +516,21 @@ def main():
 
     sent_n = skipped = failed = dedup = 0
 
+    # Run deadline. _par is bounded at 60s per batch, but seven drafts at
+    # that cost still blow past the 900s ceiling in cron_runner, so the
+    # process was killed rather than finishing. 600s leaves headroom to
+    # finish the draft in flight and write results.
+    _RUN_BUDGET = 600.0
+    _started = time.time()
+    deferred = 0
+
     for msg in drafts:
         if sent_n >= max_send:
             skipped += 1; continue
+
+        if time.time() - _started > _RUN_BUDGET:
+            deferred += 1
+            continue
 
         msg_id   = msg["id"]
         subject  = msg.get("subject", "")
@@ -780,6 +792,9 @@ def main():
     _save_sl(sl)
     print("-" * 55)
     print(f"Sent:{sent_n}  Skipped:{skipped}  Failed:{failed}  Dedup:{dedup}")
+    if deferred:
+        print(f"Deferred:{deferred} (run budget {_RUN_BUDGET:.0f}s reached, "
+              f"next run picks them up)")
 
 
 if __name__ == "__main__":
