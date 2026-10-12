@@ -295,7 +295,9 @@ def check_orphaned_modules():
              "repair_shifted_rows",
              # Run daily by scripts/publish_dashboard.sh (python -m
              # dashboard_api.export_snapshot) under launchd; no module imports it.
-             "export_snapshot"}
+             "export_snapshot",
+             # Run by hand; nothing imports it.
+             "audit_notapplied"}
 
     mods, imports = {}, {}
     for p in _iter_py():
