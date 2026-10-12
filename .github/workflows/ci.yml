@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest beautifulsoup4 requests dnspython gspread oauth2client msal pyyaml \
+            google-api-python-client google-auth-httplib2 google-auth-oauthlib \
+            numpy pandas scikit-learn
+
+      - name: Lint ratchet
+        run: |
+          pip install ruff==0.16.5
+          BASE=$(cat .ruff_baseline)
+          NOW=$(ruff check . --statistics | sed -n 's/^Found \([0-9]*\) error.*/\1/p')
+          NOW=${NOW:-0}
+          echo "baseline $BASE, current $NOW"
+          if [ "$NOW" -gt "$BASE" ]; then
+            echo "::error::lint count rose from $BASE to $NOW"
+            ruff check . --output-format concise
+            exit 1
+          fi
+          if [ "$NOW" -lt "$BASE" ]; then
+            echo "::notice::down to $NOW - lower .ruff_baseline to lock it in"
+          fi
+
+      - name: Seed minimal state
+        run: |
+          mkdir -p .local
+          python -c "import json, pathlib; p = pathlib.Path('.local/brain.json'); p.exists() or p.write_text(json.dumps({'domains':{},'companies':{},'patterns':{'global_success_rates':{},'total_attempts':0,'total_successes':0},'apis':{},'mx_cache':{},'job_id_registry':{},'discovered_ats':{},'known_ats_slugs':{},'learned_clearance':[],'learned_non_tech':[],'learned_slugs':{},'learned_company_names':{},'user_blacklist_companies':['philips','morse corp'],'user_blacklist_titles':[],'url_company_cache':{},'issue_log':[],'run_history':{},'simplify_retry_queue':{},'source_quality':{}}, indent=2))"
+
+      - name: Preflight wiring check
+        run: python -m aggregator.preflight
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+      - name: Set up Java for Spark
+        # PySpark needs a JVM. Without it the medallion write silently
+        # produces no Parquet and dbt then has nothing to read.
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Seed analytics fixture
+        # CI has no production analytics.db, so build a small deterministic
+        # one. Same schema as the real store; fixed seed so row counts and
+        # pass rates are reproducible across runs.
+        run: |
+          python - <<'PY'
+          import sqlite3, random, os
+          os.makedirs(".local", exist_ok=True)
+          c = sqlite3.connect(".local/analytics.db")
+          c.execute("""CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL,
+            company TEXT NOT NULL, title TEXT NOT NULL,
+            location TEXT DEFAULT 'Unknown', source TEXT DEFAULT 'Unknown',
+            outcome TEXT DEFAULT 'valid', rejection_reason TEXT DEFAULT '',
+            resume_type TEXT DEFAULT 'SDE', job_type TEXT DEFAULT 'Internship',
+            job_id TEXT DEFAULT 'N/A', remote TEXT DEFAULT 'Unknown',
+            sponsorship TEXT DEFAULT 'Unknown', salary_low REAL,
+            salary_high REAL, page_age_days INTEGER,
+            processing_time_ms REAL DEFAULT 0.0,
+            validation_stage_reached TEXT DEFAULT '',
+            entry_date TEXT DEFAULT '', processed_at TEXT DEFAULT '',
+            run_id TEXT DEFAULT '', company_sector TEXT,
+            location_state TEXT, is_remote INTEGER, is_sponsored INTEGER)""")
+          random.seed(42)
+          srcs = ["greenhouse", "lever", "ashby", "linkedin", "zapplyjobs_newgrad"]
+          cos = ["Stripe", "Stripe, Inc.", "Rivian", "Rivian Technologies",
+                 "Unknown", "Two Sigma", "Acme Labs Inc", ""]
+          rows = []
+          for i in range(300):
+              bad = random.random() < 0.2
+              rows.append((
+                  "https://www.google.com/search?q=x" if bad
+                  else "https://boards.greenhouse.io/a/jobs/%d" % i,
+                  random.choice(cos),
+                  random.choice(["SWE Intern", "Data Engineer", "ML Intern"]),
+                  "Boston, MA", random.choice(srcs),
+                  random.choice(["valid", "discarded", "reviewed"]), "",
+                  random.choice(["SDE", "ML", "DA"]), "Internship", "N/A",
+                  random.choice(["Remote", "Unknown"]),
+                  random.choice(["Yes", "Unknown"]),
+                  "run_2026%02d%02d_120000" % (random.randint(1, 9), random.randint(1, 28)),
+              ))
+          c.executemany("""INSERT INTO jobs (url, company, title, location, source,
+            outcome, rejection_reason, resume_type, job_type, job_id, remote,
+            sponsorship, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+          c.commit()
+          print("fixture rows:", c.execute("select count(*) from jobs").fetchone()[0])
+          PY
+
+      - name: Medallion transform check
+        # Dry run exercises the transform rules and all three layer builders
+        # without Spark, so CI needs no JVM. A regression in normalization,
+        # validation, dedup grain, or partition keys fails here.
+        run: python -m data_platform.medallion --dry-run
+
+      - name: dbt build
+        # Compiles every model and runs all data tests. Catches broken SQL,
+        # macro regressions, and constraint violations before merge.
+        run: |
+          pip install dbt-core dbt-duckdb pyspark
+          python -m data_platform.medallion
+          cd data_platform/dbt
+          dbt deps
+          dbt build --project-dir . --profiles-dir .

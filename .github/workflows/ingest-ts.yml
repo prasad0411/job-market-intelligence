@@ -1,0 +1,25 @@
+name: ingest-ts
+
+on:
+  push:
+    branches: [main]
+    paths: ["ingest-ts/**", ".github/workflows/ingest-ts.yml"]
+  pull_request:
+
+jobs:
+  service:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ingest-ts
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ingest-ts/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

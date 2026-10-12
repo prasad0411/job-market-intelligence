@@ -1,3 +1,4 @@
+from outreach.brain import Brain
 #!/usr/bin/env python3
 """
 Provider-Aware Email Verification
@@ -7,6 +8,7 @@ Provider-Aware Email Verification
   - Caches all results to avoid repeat lookups
 """
 import os, json, time, random, logging, hashlib
+from aggregator.atomic_json import write_json as _atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -52,16 +54,16 @@ class ProviderVerifier:
         if os.path.exists(path):
             try:
                 return json.load(open(path))
-            except Exception:
-                pass
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_provider._load', _swx)
         return {}
 
     @staticmethod
     def _save(path, data):
         try:
-            json.dump(data, open(path, "w"), indent=2)
-        except Exception:
-            pass
+            _atomic_write_json(path, data)
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_provider._save', _swx)
 
     # ── MX Provider Detection ─────────────────────────────────
 
@@ -74,6 +76,11 @@ class ProviderVerifier:
         provider = self._mx_lookup(domain)
         self._mx_cache[domain] = provider
         self._save(MX_CACHE_FILE, self._mx_cache)
+        # Sync to Brain
+        try:
+            Brain.get().set_mx(domain, provider != "other", provider if provider != "other" else "")
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_provider.get_provider', _swx)
         if provider != "other":
             log.info(f"MX detected: {domain} -> {provider}")
         return provider
@@ -112,8 +119,8 @@ class ProviderVerifier:
                 return "google"
             if any(kw in output for kw in _MICROSOFT_KW):
                 return "microsoft"
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_provider._mx_fallback', _swx)
         return "other"
 
     # ── Email Verification Router ─────────────────────────────
@@ -146,6 +153,25 @@ class ProviderVerifier:
         if result in ("exists", "not_exists"):
             self._email_cache[email_lower] = result
             self._save(EMAIL_VERIFY_CACHE_FILE, self._email_cache)
+            # Sync to Brain — "exists" means pattern works for this domain
+            if result == "exists":
+                try:
+                    dom = email_lower.split("@")[1]
+                    local = email_lower.split("@")[0]
+                    # Detect pattern from local part
+                    _pat = None
+                    if "." in local:
+                        _p = local.split(".")
+                        if len(_p) == 2 and len(_p[0]) > 1:
+                            _pat = "{first}.{last}"
+                        elif len(_p) == 2 and len(_p[0]) == 1:
+                            _pat = "{f}.{last}"
+                    elif "_" in local:
+                        _pat = "{first}_{last}"
+                    if _pat:
+                        Brain.get().record_pattern_success(dom, _pat, email_lower)
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_provider.verify_email', _swx)
 
         return result
 
@@ -272,7 +298,8 @@ class ProviderVerifier:
                     rf"[a-zA-Z0-9_.+-]+@{re.escape(domain)}", r.text
                 )
                 found.extend(emails)
-            except Exception:
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_provider.mine_website_pattern', _swx)
                 continue
 
         # Filter: remove generic emails, keep personal ones
@@ -289,55 +316,43 @@ class ProviderVerifier:
 
         pattern = None
         if personal:
-            # Try to detect pattern from first personal email found
-            best = personal[0]
-            local = best.split("@")[0]
-            # Common pattern detection
-            if "." in local:
-                parts = local.split(".")
-                if len(parts) == 2 and len(parts[0]) > 1 and len(parts[1]) > 1:
-                    pattern = "{first}.{last}"
-            elif "_" in local:
-                parts = local.split("_")
-                if len(parts) == 2 and len(parts[0]) > 1 and len(parts[1]) > 1:
-                    pattern = "{first}_{last}"
-            elif "-" in local:
-                parts = local.split("-")
-                if len(parts) == 2 and len(parts[0]) > 1 and len(parts[1]) > 1:
-                    pattern = "{first}-{last}"
-            if pattern:
-                log.info(f"Website mining: {domain} -> {pattern} (from {best})")
+            # FIX 4: vote on pattern across ALL personal emails, not just first
+            from collections import Counter
+            pat_votes = Counter()
+            for em in personal:
+                local = em.split("@")[0]
+                parts_dot = local.split(".")
+                parts_und = local.split("_")
+                parts_hyp = local.split("-")
+                if "." in local and len(parts_dot) == 2 and len(parts_dot[0]) > 1 and len(parts_dot[1]) > 1:
+                    pat_votes["{first}.{last}"] += 1
+                elif "_" in local and len(parts_und) == 2 and len(parts_und[0]) > 1 and len(parts_und[1]) > 1:
+                    pat_votes["{first}_{last}"] += 1
+                elif "-" in local and len(parts_hyp) == 2 and len(parts_hyp[0]) > 1 and len(parts_hyp[1]) > 1:
+                    pat_votes["{first}-{last}"] += 1
+                elif "." not in local and "_" not in local and "-" not in local:
+                    if len(local) >= 2 and local[0].isalpha():
+                        # Could be flast or firstlast
+                        if len(local) <= 6:
+                            pat_votes["{f}{last}"] += 1
+                        else:
+                            pat_votes["{first}{last}"] += 1
+                elif "." in local and len(parts_dot) == 2 and len(parts_dot[0]) == 1:
+                    pat_votes["{f}.{last}"] += 1
+            if pat_votes:
+                pattern = pat_votes.most_common(1)[0][0]
+                total = sum(pat_votes.values())
+                winner_votes = pat_votes.most_common(1)[0][1]
+                log.info(f"Website mining: {domain} -> {pattern} ({winner_votes}/{total} votes from {len(personal)} emails)")
 
         # Cache result (even None, to avoid re-scraping)
         self._mx_cache[cache_key] = pattern
         self._save(MX_CACHE_FILE, self._mx_cache)
+        # Sync mined pattern to Brain
+        if pattern:
+            try:
+                Brain.get().record_pattern_success(domain, pattern, f"mined:{domain}")
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_provider.mine_website_pattern', _swx)
         return pattern
 
-    def discover_pattern(self, parsed, domain):
-        provider = self.get_provider(domain)
-        if provider != "microsoft":
-            return None, None
-
-        f = parsed.get("fa", "").lower()
-        la = parsed.get("lc", "").lower()
-        fi = parsed.get("fi", "").lower()
-
-        if not f or not la:
-            return None, None
-
-        candidates = [
-            (f"{f}.{la}@{domain}", "{first}.{last}"),
-            (f"{fi}{la}@{domain}", "{f}{last}"),
-            (f"{f}{la}@{domain}", "{first}{last}"),
-            (f"{f}_{la}@{domain}", "{first}_{last}"),
-            (f"{f}@{domain}", "{first}"),
-        ]
-
-        for email, pattern in candidates:
-            result = self.verify_email(email, domain)
-            if result == "exists":
-                log.info(f"Pattern discovered: {domain} -> {pattern} (via {email})")
-                return email, pattern
-            elif result == "unknown":
-                break
-        return None, None

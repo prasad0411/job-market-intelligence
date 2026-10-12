@@ -1,0 +1,15 @@
+line-length = 100
+exclude = ["venv", ".local", "*.bak_*"]
+
+[lint]
+# F821 undefined name      - found 12 real bugs, incl. a backup that never ran
+# F823 use before assign   - found the 4th ATS loop-variable mismatch
+# F601 duplicate dict key  - found Bosch mislabelled and Portland as Maine
+# S110 try-except-pass     - the class that hid a dead learning loop for months
+select = ["F", "S110", "S112", "F601"]
+ignore = [
+  "E501",   # line length, handled by line-length above
+  "F401",   # unused imports - 121 of them, all cosmetic
+  "F541",   # f-strings without placeholders - cosmetic
+  "F811",   # checked all 5: function-scoped imports, deliberate shadowing
+]

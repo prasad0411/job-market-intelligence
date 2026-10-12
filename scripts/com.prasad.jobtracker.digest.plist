@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.prasad.jobtracker.digest</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker/scripts/cron_runner.sh</string>
+        <string>scripts/nightly_digest</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key><integer>0</integer>
+            <key>Minute</key><integer>22</integer>
+        </dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker/.local/launchd_digest.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker/.local/launchd_digest_err.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/prasadkanade</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

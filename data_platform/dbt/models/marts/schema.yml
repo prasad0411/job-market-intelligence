@@ -1,0 +1,72 @@
+version: 2
+
+models:
+  - name: dim_company
+    description: >
+      Company dimension at normalized company_key grain with posting volume,
+      source coverage, and a fetch-waste flag for companies that appear often
+      but almost never pass validation.
+    columns:
+      - name: company_key
+        tests: [not_null, unique]
+      - name: total_postings
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                inclusive: true
+      - name: valid_rate
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
+      - name: source_count
+        tests: [not_null]
+
+  - name: fct_rejection_funnel
+    description: Rejection volume by reason, with each reason's share of total.
+    columns:
+      - name: quarantine_reason
+        tests: [not_null, unique]
+      - name: rejected_rows
+        tests: [not_null]
+      - name: share_of_rejected
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
+
+  - name: fct_source_quality
+    description: >
+      Per-source yield combining accepted and quarantined rows, so a source
+      that produces volume but little usable data is visible.
+    columns:
+      - name: source
+        tests: [not_null, unique]
+      - name: yield_rate
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
+
+  - name: fct_weekly_ingest
+    description: Weekly ingest volume per source, built incrementally.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [p_week, p_source]
+    columns:
+      - name: p_week
+        tests: [not_null]
+      - name: p_source
+        tests: [not_null]
+      - name: postings
+        tests: [not_null]

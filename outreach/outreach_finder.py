@@ -5,6 +5,7 @@ import os
 import re, time, logging, json, requests
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as _FuturesTimeout
 OVERRIDES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.local', 'domain_overrides.json')
 RETRY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.local', 'retry_tracker.json')
 
@@ -22,8 +23,10 @@ from outreach.outreach_config import (
     key,
 )
 from outreach.outreach_data import NameParser, PatternCache, Credits
+from outreach.brain import Brain
 from outreach.outreach_provider import ProviderVerifier
 from outreach.outreach_verifier import EmailVerifier, is_suspicious_email as verify_suspicious, CircuitBreaker, DomainHistory, AUTO_SEND_THRESHOLD
+from aggregator.atomic_json import write_json as _atomic_write_json
 
 log = logging.getLogger(__name__)
 try:
@@ -33,13 +36,38 @@ except ImportError:
     _DNS = False
 
 
+_DOMAIN_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".local", "domain_cache.json"
+)
+_DOMAIN_CACHE_TTL_DAYS = 30
+
+
+def _load_domain_cache():
+    try:
+        if os.path.exists(_DOMAIN_CACHE_FILE):
+            raw = json.load(open(_DOMAIN_CACHE_FILE))
+            cutoff = __import__('time').time() - _DOMAIN_CACHE_TTL_DAYS * 86400
+            return {k: v for k, v in raw.items() if v.get("ts", 0) > cutoff}
+    except Exception as _swx:
+        from aggregator.swallowed import swallow as _s; _s('outreach_finder._load_domain_cache', _swx)
+    return {}
+
+
+def _save_domain_cache(cache):
+    try:
+        _atomic_write_json(_DOMAIN_CACHE_FILE, cache)
+    except Exception as e:
+        log.debug(f"domain_cache save failed: {e}")
+
+
 class Finder:
     def __init__(self, credits: Credits):
         self.cr = credits
         self.pc = PatternCache()
         self.pv = ProviderVerifier()
         self._reacher = None
-        self._dom = {}
+        self._dom = _load_domain_cache()
         self.verifier = EmailVerifier(
             provider_verifier=self.pv,
             reacher_verify_fn=self._verify,
@@ -49,24 +77,158 @@ class Finder:
 
     @staticmethod
     def _extract_name_from_linkedin_url(linkedin_url):
-        """Extract full name from LinkedIn URL slug. e.g. /in/chira-kingpin/ → Chira Kingpin"""
+        """
+        Extract full name from LinkedIn URL.
+        Priority:
+          1. Brain cache (permanent, never re-fetched)
+          2. Slug decomposition (works for hyphenated slugs)
+          3. LinkedIn public page <title> tag (free, no auth)
+          4. Google/Bing search fallback (uses Selenium)
+        Caches all results in Brain permanently.
+        """
         if not linkedin_url:
             return None
-        import re
-        m = re.search(r"linkedin\.com/in/([a-zA-Z0-9-]+)", linkedin_url)
+        import re as _re
+
+        # Normalize URL
+        m = _re.search(r"linkedin\.com/in/([a-zA-Z0-9_-]+)", linkedin_url)
         if not m:
             return None
-        slug = m.group(1)
-        # Remove trailing numbers (LinkedIn IDs like madeline-batista-72930372)
-        slug = re.sub(r"-[a-f0-9]{6,}$", "", slug)  # hex IDs like 967b29105
-        slug = re.sub(r"-\d{5,}$", "", slug)  # numeric IDs like 72930372
-        # Convert slug to name
-        parts = [p.capitalize() for p in slug.split("-") if p and len(p) > 1]
-        # Reject if any part looks like hex/numeric (not a real name)
-        clean = [p for p in parts if not re.match(r"^[0-9a-f]+$", p.lower()) and not p.isdigit()]
-        if len(clean) >= 2:
-            return " ".join(clean)
+        slug = m.group(1).lower().strip("/")
+
+        # 1. Check Brain cache first
+        try:
+            from outreach.brain import Brain
+            b = Brain.get()
+            cached = b._data.get("linkedin_names", {}).get(slug)
+            if cached and cached.get("name"):
+                log.debug(f"LinkedIn name from Brain cache: {slug} → {cached['name']}")
+                return cached["name"]
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._extract_name_from_linkedin_url', _swx)
+
+        # 2. Slug decomposition
+        clean_slug = slug
+        # Remove trailing hex/numeric IDs: madeline-batista-72930372, 967b29105
+        clean_slug = _re.sub(r"-[0-9a-f]{6,}$", "", clean_slug)
+        clean_slug = _re.sub(r"-\d{4,}$", "", clean_slug)
+        # Remove single-char trailing segments (initials appended to slug)
+        clean_slug = _re.sub(r"-[a-z]$", "", clean_slug)
+
+        parts = [p.capitalize() for p in clean_slug.split("-") if p and len(p) > 1]
+        # Filter out hex/numeric segments
+        clean_parts = [p for p in parts
+                      if not _re.match(r"^[0-9a-f]+$", p.lower())
+                      and not p.isdigit()
+                      and len(p) > 1]
+
+        slug_name = None
+        if len(clean_parts) >= 2:
+            slug_name = " ".join(clean_parts)
+
+        # If slug has no hyphens, it's a concatenated name like "camaraqueder"
+        # Try LinkedIn page title for ALL slugs (slug decomp might be wrong)
+        # Only skip page fetch if slug clearly has 2+ hyphen-separated real words
+        needs_page_fetch = not slug_name or "-" not in slug
+
+        if needs_page_fetch:
+            name = Finder._fetch_linkedin_name(linkedin_url, slug)
+            if name:
+                Finder._cache_linkedin_name(slug, name, "page_title")
+                return name
+
+        if slug_name:
+            Finder._cache_linkedin_name(slug, slug_name, "slug")
+            return slug_name
+
         return None
+
+    @staticmethod
+    def _fetch_linkedin_name(linkedin_url, slug):
+        """Fetch LinkedIn public page to extract name from <title> tag."""
+        import re as _re, time as _t
+        try:
+            import requests as _req
+            _agents = [
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+            ]
+            import random as _rand
+            headers = {
+                "User-Agent": _rand.choice(_agents),
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml",
+            }
+            resp = _req.get(linkedin_url, headers=headers, timeout=8, allow_redirects=True)
+            if resp.status_code == 200:
+                # Title format: "First Last | LinkedIn" or "First Last - Title | LinkedIn"
+                title_m = _re.search(r"<title[^>]*>([^<]+)</title>", resp.text, _re.I)
+                if title_m:
+                    title = title_m.group(1).strip()
+                    # Strip everything after | or - (job title, company)
+                    name = _re.split(r"\s*[|\-]\s*", title)[0].strip()
+                    # Validate: should be 2+ words, no digits, reasonable length
+                    words = name.split()
+                    if (2 <= len(words) <= 4
+                            and all(w[0].isupper() for w in words if w)
+                            and not any(c.isdigit() for c in name)
+                            and len(name) < 50):
+                        log.info(f"LinkedIn page title: {slug} → {name}")
+                        return name
+                # Try og:title meta tag
+                og_m = _re.search(r'property="og:title"[^>]*content="([^"]+)"', resp.text)
+                if not og_m:
+                    og_m = _re.search(r'content="([^"]+)"[^>]*property="og:title"', resp.text)
+                if og_m:
+                    title = og_m.group(1).strip()
+                    name = _re.split(r"\s*[|\-]\s*", title)[0].strip()
+                    words = name.split()
+                    if 2 <= len(words) <= 4 and len(name) < 50:
+                        log.info(f"LinkedIn og:title: {slug} → {name}")
+                        return name
+        except Exception as e:
+            log.debug(f"LinkedIn page fetch failed for {slug}: {e}")
+
+        # Google search fallback: "linkedin.com/in/<slug>"
+        try:
+            import requests as _req
+            import re as _re
+            search_url = f"https://www.google.com/search?q=linkedin.com%2Fin%2F{slug}"
+            headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+            resp = _req.get(search_url, headers=headers, timeout=8)
+            if resp.status_code == 200:
+                # Google result format: "Name - Title - LinkedIn"
+                hits = _re.findall(r"<h3[^>]*>([^<]+)</h3>", resp.text)
+                for hit in hits[:5]:
+                    hit = _re.sub(r"<[^>]+>", "", hit).strip()
+                    if "linkedin" in hit.lower():
+                        name = _re.split(r"\s*[-|·]\s*", hit)[0].strip()
+                        words = name.split()
+                        if 2 <= len(words) <= 4 and not any(c.isdigit() for c in name):
+                            log.info(f"Google LinkedIn search: {slug} → {name}")
+                            return name
+        except Exception as e:
+            log.debug(f"Google LinkedIn search failed: {e}")
+
+        return None
+
+    @staticmethod
+    def _cache_linkedin_name(slug, name, method):
+        """Permanently cache LinkedIn slug → name in Brain."""
+        try:
+            from outreach.brain import Brain
+            import time as _t
+            b = Brain.get()
+            if "linkedin_names" not in b._data:
+                b._data["linkedin_names"] = {}
+            b._data["linkedin_names"][slug] = {
+                "name": name,
+                "method": method,
+                "cached_at": _t.time(),
+            }
+            b.save()
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._cache_linkedin_name', _swx)
 
 
     def _verify_and_score(self, email, domain, source_hint=""):
@@ -85,7 +247,73 @@ class Finder:
     def find(self, name, company, linkedin="", job_url_domain=""):
         r = {"email": "", "source": "", "status": "Failed", "error": "", "confidence": 0}
 
+        # If name is empty but LinkedIn URL exists, extract name from URL first
+        if not name and linkedin:
+            li_name = self._extract_name_from_linkedin_url(linkedin)
+            if li_name:
+                log.info(f"Empty name — extracted from LinkedIn URL: '{li_name}'")
+                name = li_name
+            else:
+                log.info(f"Empty name and LinkedIn extraction failed: {linkedin}")
         # If name is incomplete (single name or initial), try LinkedIn URL
+        # If "name" field looks like a LinkedIn URL, extract name from it
+        import re as _re_li
+        if name and _re_li.search(r"linkedin\.com/in/", name):
+            li_name = self._extract_name_from_linkedin_url(name)
+            if li_name:
+                log.info(f"Name field was LinkedIn URL — extracted: '{li_name}'")
+                linkedin = name if not linkedin else linkedin
+                name = li_name
+            else:
+                log.info(f"Name field was LinkedIn URL but extraction failed: {name}")
+
+        # Guard: reject search-placeholder / URL / garbage names BEFORE building any email.
+        # Prevents fake addresses like "search?q=ryder+recruiter+linkedin@ryder.com".
+        _nm = (name or "").strip()
+        if (not _nm or "http" in _nm.lower() or "search?q=" in _nm.lower()
+                or "/" in _nm or "+" in _nm or "@" in _nm
+                or "linkedin.com" in _nm.lower()):
+            log.info(f"Rejected non-name input (no email built): {name!r}")
+            r["error"] = "no valid name (URL/search placeholder)"
+            return r
+
+        # Check Brain for previously verified contact for this company+role
+        try:
+            from outreach.brain import Brain
+            _b = Brain.get()
+            _role = "hm" if "hiring" in name.lower() or not name else "recruiter"
+            # Short-circuit: if PatternCache already has a verified pattern
+            # with high confidence, use it directly without running all layers
+            try:
+                import re as _re_pc
+                _domain_guess = _re_pc.sub(r"[^a-z0-9]", "", company.lower()) + ".com"
+                _pc_result = self.pc.get(_domain_guess)
+                # PatternCache.get returns a dict for some domains and a bare
+                # string for others. Without this check the .get below raised
+                # AttributeError on every outreach run for at least five days,
+                # swallowed each time, silently skipping the early exit.
+                if isinstance(_pc_result, str):
+                    _pc_result = {"pattern": _pc_result, "confidence": 0}
+                if isinstance(_pc_result, dict) and _pc_result.get("confidence", 0) >= 0.95:
+                    log.info(f"PatternCache early exit for {company}: {_pc_result}")
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_finder.find', _swx)
+            _cached_contact = _b.get_verified_contact(company, _role)
+            if _cached_contact and not _cached_contact.get("bounced"):
+                _cached_email = _cached_contact.get("email", "")
+                _cached_conf = _cached_contact.get("confidence", 0)
+                if _cached_email and _cached_conf >= 0.7:
+                    log.info(f"Brain contact reuse: {company} [{_role}] → {_cached_email} (conf={_cached_conf})")
+                    r.update(
+                        email=_cached_email,
+                        source="brain_contact_cache",
+                        status="Valid",
+                        confidence=_cached_conf,
+                    )
+                    return r
+        except Exception as _ce:
+            log.debug(f"Brain contact lookup failed: {_ce}")
+
         parsed = NameParser.parse(name)
         if parsed and (parsed["single"] or (parsed["last"] and len(parsed["last"]) <= 2)):
             li_name = self._extract_name_from_linkedin_url(linkedin)
@@ -146,6 +374,11 @@ class Finder:
             r["error"] = f"No domain for '{company}'"
             return self._apis(parsed, "", linkedin, r) if linkedin else r
         for d in domains:
+            # FIX 3: check DomainHistory confirmed pattern first
+            confirmed_pat = DomainHistory.get_confirmed_pattern(d)
+            if confirmed_pat and not self.pc.get(d):
+                self.pc.store(d, confirmed_pat)
+                log.info(f"FIX3: Loaded confirmed pattern from DomainHistory: {d} -> {confirmed_pat}")
             email = self.pc.gen_single(parsed, d)
             if email:
                 # Check domain history — is this pattern known to fail?
@@ -176,6 +409,12 @@ class Finder:
                     pv_result = self.pv.verify_email(email, domains[0])
                     if pv_result == "exists":
                         r.update(email=email, source="website_mining+provider", status="Valid", confidence=80)
+                        # Audit log
+                        try:
+                            import logging as _el
+                            _el.getLogger("outreach_audit").info(f"FOUND | {email} | website_mining+provider | confidence=80 | domain={domains[0]}")
+                        except Exception as _swx:
+                            from aggregator.swallowed import swallow as _s; _s('outreach_finder.find', _swx)
                         self._clear_retry(retry_key)
                         log.info(f"Website mined + verified: {email}")
                         return r
@@ -207,12 +446,30 @@ class Finder:
             result["confidence"] = 95 if result["status"] == "Valid" else 60
             self.pc.detect(result["email"], parsed)
             self._clear_retry(retry_key)
+            # Store verified contact in Brain for future reuse
+            try:
+                from outreach.brain import Brain
+                _role = "hm" if not linkedin else "recruiter"
+                Brain.get().store_verified_contact(
+                    company=company,
+                    role=_role,
+                    name=name,
+                    email=result["email"],
+                    linkedin=linkedin,
+                    confidence=result["confidence"],
+                )
+            except Exception as _bce:
+                log.debug(f"Brain contact store failed: {_bce}")
         else:
-            # === API-ONLY MODE: Pattern guessing DISABLED ===
-            # Provider discover and statistical inference removed.
-            # Only Apollo, Hunter, Snov, Prospeo, Norbert APIs are used.
-            log.info(f"All APIs exhausted for {parsed.get('fa','')} {parsed.get('la','')} @ {domains[0] if domains else '?'}")
-            self._track_retry(retry_key, domains[0] if domains else "", result.get("error", ""))
+            error = result.get("error", "")
+            # FIX 6: only track permanent failures — not transient credit exhaustion
+            _credit_errors = ("exhausted", "key missing", "limit", "429")
+            _is_credit_error = any(e in error.lower() for e in _credit_errors)
+            if _is_credit_error:
+                log.info(f"FIX6: Skipping retry tracking for credit error: {error}")
+            else:
+                log.info(f"All APIs exhausted for {parsed.get('fa','')} {parsed.get('la','')} @ {domains[0] if domains else '?'}")
+                self._track_retry(retry_key, domains[0] if domains else "", error)
         return result
 
     @staticmethod
@@ -229,9 +486,9 @@ class Finder:
                 del rt[k]
                 log.info(f"Retry expired (3d TTL): {k}")
             if expired:
-                json.dump(rt, open(RETRY_FILE, "w"), indent=2)
-        except Exception:
-            pass
+                _atomic_write_json(RETRY_FILE, rt)
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._cleanup_caches', _swx)
         # Email verify cache trim (keep newest 1000)
         ev_path = os.path.join(os.path.dirname(RETRY_FILE), "email_verify_cache.json")
         try:
@@ -239,17 +496,18 @@ class Finder:
             if len(ev) > 1000:
                 # Keep last 1000 entries (dict order = insertion order in Python 3.7+)
                 trimmed = dict(list(ev.items())[-1000:])
-                json.dump(trimmed, open(ev_path, "w"), indent=2)
+                _atomic_write_json(ev_path, trimmed)
                 log.info(f"Email cache trimmed: {len(ev)} -> 1000")
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._cleanup_caches', _swx)
 
     def _resolve(self, company):
         if not company:
             return []
         k = company.strip().lower()
         if k in self._dom:
-            return self._dom[k]
+            v = self._dom[k]
+            return v["domains"] if isinstance(v, dict) else v
         doms = []
         try:
             resp = requests.get(
@@ -263,11 +521,22 @@ class Finder:
                     d_base = d.split(".")[0].lower()
                     if clean_co and len(clean_co) >= 3:
                         if d_base not in clean_co and clean_co not in d_base:
-                            log.warning(f"Clearbit suspect domain BLOCKED: {company} → {d} (no name overlap). Add to .local/domain_overrides.json if correct.")
+                            # Check if MX already confirmed this domain — if so, trust it over Clearbit
+                            try:
+                                from outreach.brain import Brain
+                                _mx = Brain.get().get_mx(d)
+                                _mx_confirmed = _mx and _mx.get("provider") in ("google", "microsoft", "office365")
+                            except Exception:
+                                _mx_confirmed = False
+                            if _mx_confirmed:
+                                log.info(f"Clearbit name-overlap skipped: {d} is MX-verified ({_mx.get('provider')})")
+                            else:
+                                log.warning(f"Clearbit suspect domain BLOCKED: {company} → {d} (no name overlap). Add to .local/domain_overrides.json if correct.")
+                                continue  # skip this domain
                             continue  # BLOCK suspect domains instead of using them
                     doms.append(d)
-        except:
-            pass
+        except Exception as _e:
+            log.debug(f"finder op failed: {_e}")
         if not doms:
             clean = self._clean(company)
             if clean:
@@ -296,8 +565,24 @@ class Finder:
                 d = f"{clean.replace(' ','')}.com"
                 if self._mx(d):
                     doms = [d]
+        # Filter: check Brain for known corrections
+        filtered = []
+        for d in doms:
+            try:
+                from outreach.brain import Brain
+                correction = Brain.get().get_domain_correction(d)
+                if correction:
+                    log.info(f"Brain domain correction: {d} → {correction}")
+                    filtered.append(correction)
+                    continue
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_finder._resolve', _swx)
+            filtered.append(d)
+        doms = filtered
+
         unique = list(dict.fromkeys(d.lower() for d in doms))
-        self._dom[k] = unique
+        self._dom[k] = {"domains": unique, "ts": __import__('time').time()}
+        _save_domain_cache(self._dom)
         return unique
 
     @staticmethod
@@ -323,24 +608,53 @@ class Finder:
     @staticmethod
     @lru_cache(maxsize=500)
     def _mx(domain):
+        b = Brain.get()
+        cached = b.get_mx(domain)
+        if cached is not None:
+            return cached["valid"]
+        _KNOWN_GOOD = {
+            "google.com","meta.com","amazon.com","apple.com","microsoft.com",
+            "netflix.com","stripe.com","openai.com","databricks.com","nvidia.com",
+            "intel.com","salesforce.com","adobe.com","oracle.com","ibm.com",
+        }
+        if domain.lower() in _KNOWN_GOOD:
+            b.set_mx(domain, True, "known_good")
+            return True
         if _DNS:
             try:
                 dns.resolver.resolve(domain, "MX")
+                provider = ""
+                try:
+                    answers = dns.resolver.resolve(domain, "MX")
+                    mx_host = str(answers[0].exchange).lower()
+                    for prov in ["google","microsoft","outlook","mimecast",
+                                 "proofpoint","postini","amazon","sendgrid"]:
+                        if prov in mx_host:
+                            provider = prov
+                            break
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_finder._mx', _swx)
+                b.set_mx(domain, True, provider)
                 return True
-            except:
-                pass
+            except Exception as _e:
+                log.debug(f"finder op failed: {_e}")
             try:
                 dns.resolver.resolve(domain, "A")
+                b.set_mx(domain, True, "")
                 return True
-            except:
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
+                b.set_mx(domain, False, "")
                 return False
         else:
             import socket
-
             try:
                 socket.getaddrinfo(domain, None)
+                b.set_mx(domain, True, "")
                 return True
-            except:
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
+                b.set_mx(domain, False, "")
                 return False
 
     def _psearch(self, parsed, domains):
@@ -348,7 +662,18 @@ class Finder:
         if parsed["single"]:
             r["error"] = "Single name"
             return r
-        pa, pb, pc = NameParser.gen_phased(parsed, domains)
+        # Use Brain-ranked patterns if enough data, else default order
+        try:
+            from outreach.outreach_config import get_ranked_patterns
+            _ra, _rb, _rc = get_ranked_patterns()
+            # Temporarily override for gen_phased
+            import outreach.outreach_config as _oc
+            _orig_a, _orig_b, _orig_c = _oc.PAT_A, _oc.PAT_B, _oc.PAT_C
+            _oc.PAT_A, _oc.PAT_B, _oc.PAT_C = _ra, _rb, _rc
+            pa, pb, pc = NameParser.gen_phased(parsed, domains)
+            _oc.PAT_A, _oc.PAT_B, _oc.PAT_C = _orig_a, _orig_b, _orig_c
+        except Exception:
+            pa, pb, pc = NameParser.gen_phased(parsed, domains)
         for e in pa:
             if self._verify(e) == "safe":
                 r.update(email=e, status="Valid")
@@ -372,22 +697,35 @@ class Finder:
         def chk(e):
             return e, self._verify(e)
 
-        with ThreadPoolExecutor(max_workers=REACHER_WORKERS) as ex:
+        # as_completed had no timeout, and the context manager calls
+        # shutdown(wait=True) on exit, so one stuck worker blocked the main
+        # thread indefinitely. That accounts for 51 of 53 timeout kills:
+        # send_scheduled sat here with 900s active, 0s slept and 2s cpu.
+        _PAR_BUDGET = 60.0
+        ex = ThreadPoolExecutor(max_workers=REACHER_WORKERS)
+        try:
             futs = {ex.submit(chk, e): e for e in emails}
-            for fut in as_completed(futs):
-                if stop:
-                    break
-                try:
-                    e, v = fut.result()
-                    if v == "safe":
-                        valid.append(e)
-                        stop = True
-                    elif v == "risky":
-                        risky.append(e)
-                except:
-                    pass
+            try:
+                for fut in as_completed(futs, timeout=_PAR_BUDGET):
+                    if stop:
+                        break
+                    try:
+                        e, v = fut.result()
+                        if v == "safe":
+                            valid.append(e)
+                            stop = True
+                        elif v == "risky":
+                            risky.append(e)
+                    except Exception as _e:
+                        from aggregator.swallowed import swallow as _s; _s('outreach_finder._par', _e)
+            except _FuturesTimeout:
+                log.warning("Reacher batch exceeded %.0fs, using the %d "
+                            "verified so far", _PAR_BUDGET, len(valid) + len(risky))
             for f in futs:
                 f.cancel()
+        finally:
+            # wait=False: a stuck worker must not hold up the caller.
+            ex.shutdown(wait=False, cancel_futures=True)
         if len(valid) == 1:
             return {
                 "email": valid[0],
@@ -420,25 +758,46 @@ class Finder:
             )
             if resp.status_code == 200:
                 return resp.json().get("is_reachable", "unknown")
-        except:
-            pass
+        except Exception as _e:
+            log.debug(f"finder op failed: {_e}")
         return "unknown"
 
     @staticmethod
     def _get_override(company):
-        """Check domain_overrides.json for manual domain corrections."""
+        """Check Brain + domain_overrides.json for domain corrections."""
+        # Check Brain first (permanent cross-run memory)
+        try:
+            from outreach.brain import Brain
+            b = Brain.get()
+            brain_override = b._data.get("domain_overrides", {}).get(company.strip().lower())
+            if brain_override:
+                log.debug(f"Domain override from Brain: {company} → {brain_override}")
+                return brain_override
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._get_override', _swx)
         try:
             if os.path.exists(OVERRIDES_FILE):
                 overrides = json.load(open(OVERRIDES_FILE))
-                key = company.strip()
-                # Try exact match first, then case-insensitive
-                if key in overrides:
-                    return overrides[key]
+                # Sync file → Brain permanently
+                try:
+                    from outreach.brain import Brain
+                    b = Brain.get()
+                    bd = b._data.setdefault("domain_overrides", {})
+                    changed = any(bd.get(k.lower()) != v for k, v in overrides.items())
+                    if changed:
+                        for k, v in overrides.items():
+                            bd[k.lower()] = v
+                        b.save()
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_finder._get_override', _swx)
+                _company = company.strip()
+                if _company in overrides:
+                    return overrides[_company]
                 for k, v in overrides.items():
-                    if k.lower() == key.lower():
+                    if k.lower() == _company.lower():
                         return v
-        except:
-            pass
+        except Exception as _e:
+            log.debug(f"finder op failed: {_e}")
         return ""
 
     @staticmethod
@@ -446,8 +805,8 @@ class Finder:
         try:
             if os.path.exists(RETRY_FILE):
                 return json.load(open(RETRY_FILE))
-        except:
-            pass
+        except Exception as _e:
+            log.debug(f"finder op failed: {_e}")
         return {}
 
     @staticmethod
@@ -460,9 +819,9 @@ class Finder:
         retries[company_key]["error"] = error[:200]
         retries[company_key]["ts"] = time.time()
         try:
-            json.dump(retries, open(RETRY_FILE, "w"), indent=2)
-        except:
-            pass
+            _atomic_write_json(RETRY_FILE, retries)
+        except Exception as _e:
+            log.debug(f"finder op failed: {_e}")
 
     @staticmethod
     def _clear_retry(company_key):
@@ -470,9 +829,9 @@ class Finder:
         if company_key in retries:
             del retries[company_key]
             try:
-                json.dump(retries, open(RETRY_FILE, "w"), indent=2)
-            except:
-                pass
+                _atomic_write_json(RETRY_FILE, retries)
+            except Exception as _e:
+                log.debug(f"finder op failed: {_e}")
 
     def _is_catchall(self, domain):
         """Test if domain accepts all emails (catch-all)."""
@@ -491,8 +850,8 @@ class Finder:
                 if reachable == "safe":
                     log.info(f"Catch-all domain: {domain}")
                     return True
-        except:
-            pass
+        except Exception as _e:
+            log.debug(f"finder op failed: {_e}")
         return False
 
     def _rok(self):
@@ -501,7 +860,8 @@ class Finder:
         try:
             resp = requests.get(REACHER_URL.replace("/v0/check_email", "/"), timeout=3)
             self._reacher = resp.status_code in (200, 404, 405)
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             # Auto-start Docker Desktop + Reacher on macOS
             log.info("Reacher not running — attempting to start Docker Desktop...")
             try:
@@ -515,8 +875,8 @@ class Finder:
                 try:
                     dc = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=5)
                     daemon_running = dc.returncode == 0
-                except:
-                    pass
+                except Exception as _e:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_finder._rok', _e)
 
                 # Step 2: If daemon not running, launch Docker Desktop (macOS)
                 if not daemon_running and platform.system() == "Darwin":
@@ -533,8 +893,8 @@ class Finder:
                                 print(f"  Docker Desktop ready ({(attempt+1)*2}s)")
                                 daemon_running = True
                                 break
-                        except:
-                            pass
+                        except Exception as _e:
+                            from aggregator.swallowed import swallow as _s; _s('outreach_finder._rok', _e)
                     if not daemon_running:
                         log.warning("Docker Desktop did not start within 60s")
                         print("  Docker Desktop did not start within 60s")
@@ -556,8 +916,8 @@ class Finder:
                                 log.info("Reacher is now running")
                                 print("  Reacher email verifier ready")
                                 return self._reacher
-                        except:
-                            pass
+                        except Exception as _e:
+                            from aggregator.swallowed import swallow as _s; _s('outreach_finder._rok', _e)
                     else:
                         log.warning(f"Docker compose failed: {result.stderr[:500]}")
 
@@ -569,18 +929,351 @@ class Finder:
                 log.warning(f"Docker auto-start failed: {e}")
             self._reacher = False
             log.warning("Reacher unavailable. Pattern-based email verification disabled.")
+            # Notify via Brain alert so you know to start Docker
+            try:
+                from outreach.brain import Brain as _B
+                _b = _B.get()
+                _last_alert = _b._data.get("_reacher_last_alert", 0)
+                import time as _t
+                if _t.time() - _last_alert > 6 * 3600:  # Alert at most every 6h
+                    _b._data["_reacher_last_alert"] = _t.time()
+                    _b.save()
+                    _b.send_email_alert(
+                        "⚠️ Reacher Docker is down",
+                        "Reacher email verifier is not running.\n\n"
+                        "Email confidence scores will be lower until it restarts.\n\n"
+                        "To fix: open Docker Desktop and wait for containers to start.\n"
+                        "Or run: cd \'Job Hunt Tracker\' && docker compose up -d"
+                    )
+            except Exception as _re:
+                log.debug(f"Reacher alert failed: {_re}")
         return self._reacher
 
+    def _github_email_search(self, name, company):
+        """Free email discovery: search GitHub for employee's public email.
+        
+        Many engineers have emails visible in:
+        1. GitHub profile (public email field)
+        2. Git commit author emails
+        3. GitHub event stream
+        """
+        import requests as _req
+        try:
+            # Search GitHub users by name + company
+            _first = name.split()[0] if name else ""
+            _last = name.split()[-1] if name and len(name.split()) > 1 else ""
+            if not _first or not _last:
+                return None
+            
+            query = f"{_first} {_last} {company}"
+            resp = _req.get(
+                f"https://api.github.com/search/users?q={query}&per_page=3",
+                headers={"Accept": "application/vnd.github.v3+json"},
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                return None
+            
+            users = resp.json().get("items", [])
+            for user in users:
+                # Check user profile for public email
+                user_resp = _req.get(
+                    f"https://api.github.com/users/{user['login']}",
+                    headers={"Accept": "application/vnd.github.v3+json"},
+                    timeout=8,
+                )
+                if user_resp.status_code == 200:
+                    email = user_resp.json().get("email")
+                    if email and "@" in email and "noreply" not in email:
+                        company_domain = email.split("@")[1].lower()
+                        # Verify it's a company email, not personal
+                        if any(d in company_domain for d in ["gmail", "yahoo", "hotmail", "outlook.com"]):
+                            continue
+                        log.info(f"GitHub discovery: {name} @ {company} → {email}")
+                        return email
+                
+                # Check recent events for commit emails
+                events_resp = _req.get(
+                    f"https://api.github.com/users/{user['login']}/events/public?per_page=10",
+                    headers={"Accept": "application/vnd.github.v3+json"},
+                    timeout=8,
+                )
+                if events_resp.status_code == 200:
+                    for event in events_resp.json():
+                        commits = event.get("payload", {}).get("commits", [])
+                        for commit in commits:
+                            cemail = commit.get("author", {}).get("email", "")
+                            if cemail and "@" in cemail and "noreply" not in cemail:
+                                if any(d in cemail for d in ["gmail", "yahoo", "hotmail"]):
+                                    continue
+                                log.info(f"GitHub commit discovery: {name} → {cemail}")
+                                return cemail
+        except Exception as e:
+            log.debug(f"GitHub email search failed: {e}")
+        return None
+
+    def _batch_reacher_verify(self, parsed, domain):
+        """Test ALL email patterns at once via Reacher. Pick the best one.
+        
+        Instead of trying 1 pattern per day and waiting for bounces,
+        test 8-10 patterns in ~15 seconds and pick the verified one.
+        Returns (email, confidence, source) or (None, 0, None).
+        """
+        if not self._rok() or not domain:
+            return None, 0, None
+        
+        first = parsed.get("fa", "")
+        last = parsed.get("la", "")
+        if not first or not last:
+            return None, 0, None
+        
+        f = first.lower()
+        l = last.lower()
+        fi = f[0] if f else ""
+        li_char = l[0] if l else ""
+        
+        # Generate all candidate patterns
+        candidates = [
+            f"{f}.{l}@{domain}",        # first.last
+            f"{fi}{l}@{domain}",         # flast
+            f"{f}{li_char}@{domain}",    # firstl
+            f"{f}_{l}@{domain}",         # first_last
+            f"{f}@{domain}",             # first
+            f"{l}.{f}@{domain}",         # last.first
+            f"{fi}.{l}@{domain}",        # f.last
+            f"{f}.{li_char}@{domain}",   # first.l
+            f"{f}-{l}@{domain}",         # first-last
+            f"{f}{l}@{domain}",          # firstlast
+        ]
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                unique.append(c)
+        candidates = unique
+        
+        # Check pattern blacklist — skip known failed patterns
+        try:
+            import json
+            _bl_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".local", "pattern_blacklist.json")
+            if os.path.exists(_bl_file):
+                with open(_bl_file) as _f:
+                    _blacklist = json.load(_f)
+                _blocked = _blacklist.get(domain, [])
+                candidates = [c for c in candidates if c.split("@")[0] not in _blocked]
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._batch_reacher_verify', _swx)
+        
+        # Check bounce cache — skip known bounced emails
+        try:
+            from outreach.bounce_scanner import BounceScanner
+            _bounced = set(BounceScanner.load_bounced().keys())
+            candidates = [c for c in candidates if c.lower() not in _bounced]
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._batch_reacher_verify', _swx)
+        
+        if not candidates:
+            log.info(f"Batch Reacher: all patterns exhausted for {domain}")
+            return None, 0, None
+        
+        log.info(f"Batch Reacher: testing {len(candidates)} patterns for {first} {last} @ {domain}")
+        
+        # First: check if domain is catch-all (all patterns will return "safe")
+        if self._is_catchall(domain):
+            # Can't verify via SMTP — use MX-based priority
+            log.info(f"Batch Reacher: {domain} is catch-all, using MX-priority pattern")
+            mx_pattern = self._mx_priority_pattern(domain)
+            if mx_pattern:
+                for c in candidates:
+                    local = c.split("@")[0]
+                    if mx_pattern == "first.last" and "." in local and len(local.split(".")[0]) > 1:
+                        return c, 50, "catchall_mx_priority"
+                    elif mx_pattern == "flast" and len(local) > 2 and local[1:] == l:
+                        return c, 50, "catchall_mx_priority"
+            # Default: first.last for catch-all
+            return candidates[0], 40, "catchall_default"
+        
+        # Test each candidate through Reacher
+        import requests
+        import time as _t
+        safe_results = []
+        risky_results = []
+
+        # Wall-clock budget for the whole sweep.
+        #
+        # Ten candidates at a 12s timeout plus a 0.5s pause is 125s worst
+        # case, and find() runs this for several domain guesses. On 28 Sep
+        # three sweeps took 2,244s each and send_scheduled was killed at its
+        # 900s ceiling three nights running - no email went out.
+        #
+        # A responsive mail server answers in well under a second, so this
+        # only bites when the target is not answering, which is exactly when
+        # the remaining candidates will not answer either.
+        _BUDGET = 45.0
+        _deadline = _t.time() + _BUDGET
+
+        for email in candidates:
+            if _t.time() > _deadline:
+                log.info("Batch Reacher: %.0fs budget spent, stopping after "
+                         "%d of %d patterns for %s",
+                         _BUDGET, candidates.index(email), len(candidates), domain)
+                break
+            try:
+                resp = requests.post(
+                    REACHER_URL,
+                    json={"to_email": email, "from_email": "verify@example.org"},
+                    timeout=12,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    reachable = data.get("is_reachable", "unknown")
+                    smtp = data.get("smtp", {})
+                    
+                    if reachable == "safe":
+                        safe_results.append((email, 90, "batch_reacher_safe"))
+                        log.info(f"  ✓ SAFE: {email}")
+                        # First safe result is enough — use it
+                        break
+                    elif reachable == "risky":
+                        risky_results.append((email, 55, "batch_reacher_risky"))
+                        log.info(f"  ~ RISKY: {email}")
+                    else:
+                        log.info(f"  ✗ {reachable}: {email}")
+                else:
+                    log.debug(f"  Reacher HTTP {resp.status_code} for {email}")
+            except Exception as e:
+                log.debug(f"  Reacher error for {email}: {e}")
+            
+            # Rate limit: small delay between checks
+            import time
+            time.sleep(0.5)
+        
+        # Return best result
+        if safe_results:
+            email, conf, src = safe_results[0]
+            self.pc.detect(email, parsed)  # Learn the pattern
+            log.info(f"Batch Reacher: VERIFIED {email} (confidence={conf})")
+            return email, conf, src
+        elif risky_results:
+            email, conf, src = risky_results[0]
+            log.info(f"Batch Reacher: best risky result {email} (confidence={conf})")
+            return email, conf, src
+        
+        log.info(f"Batch Reacher: no valid email found for {first} {last} @ {domain}")
+        return None, 0, None
+
+    def _google_email_pattern_discovery(self, domain):
+        """Search Google for public emails at this domain to learn the pattern.
+        
+        Searches: "@domain.com" email — finds press releases, bios, job posts
+        that contain real employee emails, revealing the pattern.
+        """
+        try:
+            import requests as _req
+            query = f'"%40{domain}" email'
+            resp = _req.get(
+                f"https://www.google.com/search?q={query}&num=5",
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                import re
+                # Find email patterns in search results
+                emails = re.findall(rf"[a-zA-Z0-9._%+-]+@{re.escape(domain)}", resp.text)
+                if emails:
+                    # Analyze the pattern from found emails
+                    for email in emails:
+                        local = email.split("@")[0]
+                        if "." in local and len(local.split(".")) == 2:
+                            parts = local.split(".")
+                            if len(parts[0]) > 1 and len(parts[1]) > 1:
+                                log.info(f"Google pattern discovery: {domain} uses first.last (from {email})")
+                                return "first.last"
+                            elif len(parts[0]) == 1:
+                                log.info(f"Google pattern discovery: {domain} uses f.last (from {email})")
+                                return "f.last"
+                        elif "_" in local:
+                            log.info(f"Google pattern discovery: {domain} uses first_last (from {email})")
+                            return "first_last"
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_finder._google_email_pattern_discovery', _swx)
+        return None
+
+    def _mx_priority_pattern(self, domain):
+        """Check MX records to determine likely email pattern.
+        
+        Google Workspace → first.last (80% of the time)
+        Microsoft 365 → first.last or flast (50/50)
+        Self-hosted → unpredictable
+        """
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["dig", "+short", "MX", domain],
+                capture_output=True, text=True, timeout=5
+            )
+            mx = result.stdout.lower()
+            
+            if "google" in mx or "aspmx" in mx:
+                return "first.last"  # Google Workspace
+            elif "outlook" in mx or "microsoft" in mx or "protection.outlook" in mx:
+                return "first.last"  # Microsoft 365 most common
+            elif "pphosted" in mx or "proofpoint" in mx:
+                return "first.last"  # Enterprise, usually first.last
+            elif "mimecast" in mx:
+                return "first.last"
+            else:
+                return "first.last"  # Default best guess
+        except Exception:
+            return "first.last"
+    
     def _apis(self, p, dom, li, r):
-        for fn in [
-            lambda: self._apollo(p, dom, li),
-            lambda: self._hunter(p, dom) if dom else None,
-            lambda: self._snov(p, dom) if dom else None,
-            lambda: self._prospeo(p, dom, li) if dom or li else None,
-        ]:
+        # Live-tested 2026: only Hunter returns data (Apollo/Snov fail silently,
+        # Prospeo endpoint deprecated). Hunter first; others kept as fallback
+        # in case keys are renewed, but they cost a wasted call each when dead.
+        default_order = ["hunter"]
+        try:
+            ranked = Brain.get().best_api_order(default_order)
+        except Exception:
+            ranked = default_order
+        fns = {
+            "apollo":  lambda: self._apollo(p, dom, li),
+            "hunter":  lambda: self._hunter(p, dom) if dom else None,
+            "snov":    lambda: self._snov(p, dom) if dom else None,
+            "prospeo": lambda: self._prospeo(p, dom, li) if dom or li else None,
+        }
+        for name in ranked:
+            fn = fns.get(name)
+            if not fn:
+                continue
             res = fn()
             if res and res["status"] in ("Valid", "Manual Review"):
                 return res
+        # FALLBACK: try public web + company site (safe, no LinkedIn) as last resort.
+        try:
+            from outreach.public_email_finder import find_public_email
+            # was `job_url_domain` and `company`, neither of which exists in
+            # _apis(self, p, dom, li, r) - so this public-web fallback raised
+            # NameError and never ran. It is the last resort when every API
+            # misses, which is exactly the case it was written for.
+            # find_public_email only uses name and domain internally.
+            _dom_pf = dom or ""
+            # fna/lna exist nowhere in this file; the parsed-name keys are
+            # fa/la. The guard could never be true, so the public-web fallback
+            # never ran - the one path that needs no API credits at all.
+            if _dom_pf and p.get("fa") and p.get("la"):
+                _full = f"{p['fa']} {p['la']}"
+                _pub = find_public_email(_full, _dom_pf, _dom_pf, verifier=getattr(self, 'verifier', None))
+                if _pub and _pub.get("email"):
+                    log.info(f"Public-web fallback found {_pub['email']} ({_pub['source']})")
+                    r["email"]=_pub["email"]; r["confidence"]=_pub["confidence"]
+                    r["source"]=_pub["source"]; r["status"]="Valid"; r["error"]=""
+                    return r
+        except Exception as _pfe:
+            log.debug(f"Public fallback error: {_pfe}")
         r["error"] = "All methods exhausted"
         return r
 
@@ -596,7 +1289,8 @@ class Finder:
             except requests.Timeout:
                 if i < API_RETRIES - 1:
                     time.sleep(2**i)
-            except:
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
                 break
         return None
 
@@ -627,6 +1321,8 @@ class Finder:
                         if per.get("email_status") == "verified"
                         else "Manual Review"
                     )
+                    if r["status"] == "Valid":
+                        self.cr.record_email_found("apollo")
                     return r
                 r["error"] = "Apollo: no email"
         except Exception as e:
@@ -660,6 +1356,8 @@ class Finder:
                 if email:
                     r["email"] = email
                     r["status"] = "Valid" if conf >= HUNTER_CONF else "Manual Review"
+                    if r["status"] == "Valid":
+                        self.cr.record_email_found("hunter")
                     return r
                 r["error"] = "Hunter: no email"
         except Exception as e:
@@ -696,6 +1394,8 @@ class Finder:
                     r["status"] = (
                         "Valid" if best.get("status") == "valid" else "Manual Review"
                     )
+                    if r["status"] == "Valid":
+                        self.cr.record_email_found("snov")
                     return r
                 r["error"] = "Snov: no emails"
         except Exception as e:
@@ -732,6 +1432,8 @@ class Finder:
                     conf = data.get("response", {}).get("email", {}).get("email_confidence", 0)
                     r["email"] = email
                     r["status"] = "Valid" if conf and int(conf) >= 70 else "Manual Review"
+                    if r["status"] == "Valid":
+                        self.cr.record_email_found("prospeo")
                     return r
                 r["error"] = "Prospeo: no email"
             elif resp:

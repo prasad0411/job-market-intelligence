@@ -7,6 +7,7 @@ import json
 import base64
 import logging
 import datetime
+from aggregator.atomic_json import write_json as _atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -25,16 +26,54 @@ class BounceScanner:
         try:
             if os.path.exists(BOUNCED_EMAILS_FILE):
                 return json.load(open(BOUNCED_EMAILS_FILE))
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('bounce_scanner.load_bounced', _swx)
         return {}
+
+    @staticmethod
+    @staticmethod
+    def update_domain_reputation():
+        """Update domain reputation scores from bounce cache."""
+        import json
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        rep_file = os.path.join(base, ".local", "domain_reputation.json")
+        bounce_file = os.path.join(base, ".local", "bounced_emails.json")
+        try:
+            bounced = {}
+            if os.path.exists(bounce_file):
+                with open(bounce_file) as f:
+                    bounced = json.load(f)
+            reputation = {}
+            if os.path.exists(rep_file):
+                with open(rep_file) as f:
+                    reputation = json.load(f)
+            # Count bounces per domain
+            from collections import Counter
+            domain_bounces = Counter()
+            for email in bounced:
+                if "@" in email:
+                    domain_bounces[email.split("@")[1]] += 1
+            # Update reputation
+            for domain, count in domain_bounces.items():
+                if domain not in reputation:
+                    reputation[domain] = {"score": 0, "bounces": 0, "successes": 0, "blocked": False}
+                reputation[domain]["bounces"] = count
+                reputation[domain]["score"] = count * -30
+                reputation[domain]["blocked"] = count >= 5  # 5+ bounces = permanent block (5 pattern attempts)
+                if count >= 2:
+                    reputation[domain]["reason"] = f"{count} bounced emails — domain blocked"
+            with open(rep_file, "w") as f:
+                json.dump(reputation, f, indent=2)
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('bounce_scanner.update_domain_reputation', _swx)
 
     @staticmethod
     def save_bounced(cache: dict):
         try:
-            json.dump(cache, open(BOUNCED_EMAILS_FILE, "w"), indent=2)
+            _atomic_write_json(BOUNCED_EMAILS_FILE, cache)
         except Exception as e:
             log.error(f"Failed to save bounce cache: {e}")
+        BounceScanner.update_domain_reputation()
 
     @staticmethod
     def scan(gmail_service, days_back: int = 14) -> set:
@@ -61,14 +100,26 @@ class BounceScanner:
                 'subject:"failure notice")'
             )
 
-            result = (
-                gmail_service.users()
-                .messages()
-                .list(userId="me", q=query, maxResults=100)
-                .execute()
-            )
+            # FIX 3b: also scan "Failed Emails" label explicitly
+            label_query = f"after:{after_date} label:failed-emails"
 
-            messages = result.get("messages", [])
+            messages = []
+            seen_ids = set()
+            for q in [query, label_query]:
+                try:
+                    result = (
+                        gmail_service.users()
+                        .messages()
+                        .list(userId="me", q=q, maxResults=100)
+                        .execute()
+                    )
+                    for m in result.get("messages", []):
+                        if m["id"] not in seen_ids:
+                            seen_ids.add(m["id"])
+                            messages.append(m)
+                except Exception as qe:
+                    log.debug(f"Bounce query failed ({q[:40]}): {qe}")
+
             if not messages:
                 log.info("Bounce scanner: no bounce messages found")
                 return set(bounced.keys())
@@ -98,8 +149,51 @@ class BounceScanner:
                                 "subject": subject[:200],
                                 "msg_id": msg_id,
                             }
+                            # FIX 8: invalidate stale email_verify_cache entry
+                            try:
+                                import os as _os
+                                _ev_file = _os.path.join(
+                                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                                    ".local", "email_verify_cache.json"
+                                )
+                                if _os.path.exists(_ev_file):
+                                    _ev = json.load(open(_ev_file))
+                                    if email_lower in _ev:
+                                        del _ev[email_lower]
+                                        _atomic_write_json(_ev_file, _ev)
+                                        log.info(f"FIX8: Invalidated stale verify cache for {email_lower}")
+                            except Exception as _eve:
+                                log.debug(f"verify cache invalidation failed: {_eve}")
                             newly_found.add(email_lower)
                             log.info(f"Bounce detected: {email_lower} | {subject[:60]}")
+                            # Mark contact as bounced in Brain for contact reuse system
+                            try:
+                                from outreach.brain import Brain
+                                _b = Brain.get()
+                                # Find which company this contact belongs to
+                                for _co_key, _contacts in _b._data.get("company_contacts", {}).items():
+                                    for _role, _contact in _contacts.items():
+                                        if _contact.get("email", "").lower() == email_lower:
+                                            _b.mark_contact_bounced(_co_key, _role, email_lower)
+                                            log.info(f"Brain: marked bounced contact {email_lower} for {_co_key}")
+                                            break
+                            except Exception as _bce:
+                                log.debug(f"Brain bounce mark failed: {_bce}")
+                            # Auto-raise confidence threshold for this domain in Brain
+                            try:
+                                from outreach.brain import Brain
+                                _dom = email_lower.split("@")[1] if "@" in email_lower else ""
+                                if _dom:
+                                    _b = Brain.get()
+                                    _t = _b._data.setdefault("domain_thresholds", {})
+                                    _cur = _t.get(_dom, 75)
+                                    _new = min(_cur + 10, 95)
+                                    if _new > _cur:
+                                        _t[_dom] = _new
+                                        _b.save()
+                                        log.info(f"Brain: raised threshold {_dom}: {_cur} → {_new}")
+                            except Exception as _swx:
+                                from aggregator.swallowed import swallow as _s; _s('bounce_scanner.scan', _swx)
                             
                             # Learn from bounce: record failed pattern in DomainHistory
                             try:
@@ -185,11 +279,21 @@ class BounceScanner:
                 # Check if sent 24h+ ago
                 try:
                     from dateutil import parser as _dp
-                    sent_dt = _dp.parse(sent_date)
+                    import warnings as _w
+                    from dateutil.parser import UnknownTimezoneWarning as _UTW
+                    with _w.catch_warnings():
+                        _w.filterwarnings("ignore", category=_UTW)
+                        sent_dt = _dp.parse(sent_date, tzinfos={
+                            "ET": -18000, "EST": -18000, "EDT": -14400,
+                            "PT": -28800, "PST": -28800, "PDT": -25200,
+                            "CT": -21600, "CST": -21600, "CDT": -18000,
+                            "MT": -25200, "MST": -25200, "MDT": -21600,
+                        })
                     age_hours = (now - sent_dt).total_seconds() / 3600
                     if age_hours < 24:
                         continue
-                except Exception:
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('bounce_scanner.scan', _swx)
                     continue
                 # If email was sent and NOT bounced, confirm the pattern
                 for email in [hm_email, rec_email]:
@@ -214,6 +318,13 @@ class BounceScanner:
                         if not existing:
                             DomainHistory.record_success(domain, pattern, email_lower)
                             confirmed_count += 1
+                            # FIX 2: also update PatternCache so find() uses it immediately
+                            try:
+                                from outreach.outreach_data import PatternCache
+                                PatternCache().store(domain, pattern)
+                                log.info(f"PatternCache updated: {domain} -> {pattern}")
+                            except Exception as _pce:
+                                log.debug(f"PatternCache update failed: {_pce}")
             if confirmed_count > 0:
                 log.info(f"DomainHistory: confirmed {confirmed_count} successful patterns from sent emails")
                 print(f"  Domain patterns: {confirmed_count} confirmed from successful deliveries")
@@ -338,8 +449,8 @@ class BounceScanner:
                     "utf-8", errors="replace"
                 )
                 texts.append(decoded)
-            except Exception:
-                pass
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('bounce_scanner._collect_text_parts', _swx)
         for part in payload.get("parts", []):
             texts.extend(BounceScanner._collect_text_parts(part))
         return texts

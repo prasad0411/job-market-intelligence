@@ -62,39 +62,116 @@ C = {
 }
 
 SENDER_NAME = "Prasad Kanade"
-SENDER_EMAIL = "prasadckanade@gmail.com"
+SENDER_EMAIL = "prasadckanade@gmail.com"      # Gmail — used for bounce scanning only
+MS_SENDER_EMAIL = "kanade.pra@northeastern.edu"  # Microsoft — used for sending
+MS_SENDER_NAME = "Prasad Kanade"
+
+# Microsoft public client ID (works with any M365 account, no Azure registration needed)
+# This is Microsoft's own Office desktop client ID — universally trusted
+MS_CLIENT_ID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+MS_AUTHORITY = "https://login.microsoftonline.com/common"
+MS_SCOPES = ["https://graph.microsoft.com/Mail.Send"]
+
+# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# ROLE-SPECIFIC EMAIL TEMPLATES
+# ═══════════════════════════════════════════════════════════
 
 HM_SUBJ = "Prasad Kanade \u2014 Application for {title} | {job_id}"
-HM_BODY = (
+
+_HM_BODY_SDE = (
     "Hi {first},\n\n"
-    "I hope you're doing well. I recently applied for the {title} | {job_id} role at {company} "
-    "and wanted to reach out personally because I am genuinely enthusiastic about this opportunity.\n\n"
-    "I am pursuing my Master's in Computer Science at Northeastern University and bring 1.5 years "
-    "of professional experience at Amdocs, where I built and optimized large-scale backend systems "
-    "and delivered measurable performance improvements in production environments.\n\n"
-    "I am driven by growth, accountability, and impact. Given the opportunity, I will approach this "
-    "role with full ownership and a commitment to delivering beyond expectations \u2014 learning quickly, "
-    "contributing immediately, and pushing myself to add real value to your team.\n\n"
-    "I have attached my resume and would truly appreciate the chance to connect.\n\n"
+    "I recently applied for the {title} | {job_id} role at {company} and wanted to reach out "
+    "directly. I've been following {company}'s engineering work closely and this role is exactly "
+    "where I want to be.\n\n"
+    "I bring around 2 years of production engineering experience building microservices, optimizing "
+    "databases, and deploying cloud infrastructure. Not just academic projects, but systems running "
+    "in production at scale. I'm also a published researcher (Springer) which shows I go beyond "
+    "surface level and deliver rigorous, impactful work.\n\n"
+    "I'm finishing my Master's in CS at Northeastern (3.66 GPA) and I'm ready to hit the ground "
+    "running. That experience directly translates here and I'm confident I can contribute from "
+    "day one.\n\n"
+    "I would love the opportunity to discuss this further and demonstrate what I can bring. "
+    "Resume attached.\n\n"
     "Best regards,\nPrasad Kanade"
 )
 
-REC_SUBJ = "Prasad Kanade \u2014 Application for {title} | {job_id}"
-REC_BODY = (
+_HM_BODY_ML = (
     "Hi {first},\n\n"
-    "I hope you're doing well. I recently applied for the {title} | {job_id} role at {company} "
-    "and wanted to reach out personally because I am genuinely enthusiastic about this opportunity.\n\n"
-    "I'm pursuing my Master's in Computer Science at Northeastern University and bring 1.5 years "
-    "of professional experience at Amdocs, where I worked on large-scale backend systems in "
-    "production environments and contributed to measurable performance improvements.\n\n"
-    "I am at a stage where I am eager to fully invest my skills and energy into the right "
-    "opportunity - one where I can grow within a strong team, take on real responsibility, and "
-    "make a meaningful impact from day one. I take my work seriously and approach every challenge "
-    "with discipline and drive.\n\n"
-    "I have attached my resume and would genuinely love the chance to discuss how I can contribute "
-    "and what the next steps look like.\n\n"
+    "I recently applied for the {title} | {job_id} role at {company} and wanted to reach out "
+    "directly. I've been following {company}'s work in AI/ML closely and this role is exactly "
+    "where I want to be.\n\n"
+    "I bring both published ML research (Springer) and around 2 years of production engineering "
+    "experience. I don't just build models, I build systems that ship. That combination of research "
+    "depth and real world delivery is what I'm bringing to this role.\n\n"
+    "I'm finishing my Master's in CS at Northeastern (3.66 GPA) and I'm ready to hit the ground "
+    "running. That experience directly translates here and I'm confident I can contribute from "
+    "day one.\n\n"
+    "I would love the opportunity to discuss this further and demonstrate what I can bring. Resume attached.\n\n"
     "Best regards,\nPrasad Kanade"
 )
+
+_HM_BODY_DA = (
+    "Hi {first},\n\n"
+    "I recently applied for the {title} | {job_id} role at {company} and wanted to reach out "
+    "directly. I've been following {company}'s approach to data closely and this role is exactly "
+    "where I want to be.\n\n"
+    "I bring around 2 years of production experience building data pipelines, optimizing query "
+    "performance, and delivering analytics that drive decisions. Not just coursework, but production "
+    "systems at enterprise scale. I also have published research applying ML to real world "
+    "datasets.\n\n"
+    "I'm finishing my Master's in CS at Northeastern (3.66 GPA) and I'm ready to hit the ground "
+    "running. That experience directly translates here and I'm confident I can contribute from "
+    "day one.\n\n"
+    "I would love the opportunity to discuss this further and demonstrate what I can bring. Resume attached.\n\n"
+    "Best regards,\nPrasad Kanade"
+)
+
+HM_BODIES = {"SDE": _HM_BODY_SDE, "ML": _HM_BODY_ML, "DA": _HM_BODY_DA}
+HM_BODY = _HM_BODY_SDE
+
+REC_SUBJ = "Prasad Kanade \u2014 Application for {title} | {job_id}"
+
+_REC_BODY_SDE = (
+    "Hi {first},\n\n"
+    "I applied for the {title} | {job_id} role at {company} and I'm genuinely excited about this "
+    "one. I've been following {company}'s engineering work and the direction the team is taking is "
+    "exactly what drew me to apply.\n\n"
+    "I have around 2 years of hands on production engineering experience combined with a Master's "
+    "in CS from Northeastern (3.66 GPA). My past work directly translates to this role and I'm "
+    "confident I can contribute from day one.\n\n"
+    "I would love the opportunity to discuss this further and demonstrate what I can bring. "
+    "Resume attached.\n\n"
+    "Best regards,\nPrasad Kanade"
+)
+
+_REC_BODY_ML = (
+    "Hi {first},\n\n"
+    "I applied for the {title} | {job_id} role at {company} and this is genuinely the opportunity "
+    "I've been looking for. I've been following {company}'s engineering work and the direction the "
+    "team is taking is exactly what drew me to apply.\n\n"
+    "I bring published ML research (Springer) combined with around 2 years of production "
+    "engineering. That combination of research and delivery is what I bring to the table. I'm "
+    "finishing my Master's in CS at Northeastern (3.66 GPA) and that experience directly translates "
+    "here. I'm confident I can contribute from day one.\n\n"
+    "I would love the opportunity to discuss this further and demonstrate what I can bring. Resume attached.\n\n"
+    "Best regards,\nPrasad Kanade"
+)
+
+_REC_BODY_DA = (
+    "Hi {first},\n\n"
+    "I applied for the {title} | {job_id} role at {company} and I'm genuinely excited about this "
+    "opportunity. I've been following {company}'s engineering work and the direction the team is "
+    "taking is exactly what drew me to apply.\n\n"
+    "I have around 2 years of production data engineering experience combined with published ML "
+    "research and a Master's in CS from Northeastern (3.66 GPA). That experience directly "
+    "translates here and I'm confident I can contribute from day one.\n\n"
+    "I would love the opportunity to discuss this further and demonstrate what I can bring. Resume attached.\n\n"
+    "Best regards,\nPrasad Kanade"
+)
+
+REC_BODIES = {"SDE": _REC_BODY_SDE, "ML": _REC_BODY_ML, "DA": _REC_BODY_DA}
+REC_BODY = _REC_BODY_SDE
 
 PAT_A = ["{first}.{last}", "{f}{last}", "{first}{last}"]
 PAT_B = [
@@ -148,6 +225,7 @@ CREDITS_FILE = os.path.join(_ROOT, ".local", "outreach_credits.json")
 PATTERNS_FILE = os.path.join(_ROOT, ".local", "outreach_patterns.json")
 LOG_FILE = os.path.join(_ROOT, ".local", "outreach.log")
 DRAFT_HISTORY_FILE = os.path.join(_ROOT, ".local", "draft_history.json")
+MS_TOKEN_FILE = os.path.join(_ROOT, ".local", "ms_token.json")
 RESUME_SDE = os.path.join(_ROOT, ".local", "Prasad Kanade SWE Resume.pdf")
 RESUME_ML = os.path.join(_ROOT, ".local", "Prasad Kanade ML Resume.pdf")
 RESUME_DA = os.path.join(_ROOT, ".local", "Prasad Kanade Data Resume.pdf")
@@ -155,6 +233,17 @@ RESUME_DA = os.path.join(_ROOT, ".local", "Prasad Kanade Data Resume.pdf")
 # ATS/internal domains that should never receive outreach emails
 SUSPICIOUS_EMAIL_DOMAINS = [
     "oraclecloud.com",
+    "onseminar.com",        # Clearbit error for onsemi.com
+    "kariera-onsemi.cz",    # Czech ATS routing domain
+    "myworkdayjobs.com",    # ATS platform not real email domain
+    "greenhouse.io",        # ATS platform
+    "lever.co",             # ATS platform
+    "jobvite.com",          # ATS platform
+    "taleo.net",            # ATS platform
+    "icims.com",            # ATS platform
+    "avfirewalls.co.il",    # Clearbit error for fortinet.com
+    "i-voce.jp",            # Clearbit error for ivo.com
+    "edel.fa.us2.oraclecloud.com",  # Oracle ATS subdomain
     "myworkdaysite.com",
     "myworkdayjobs.com",
     "successfactors.com",
@@ -317,8 +406,8 @@ def warmup_limit():
         for th, lim in WARMUP:
             if d < th:
                 return lim
-    except:
-        pass
+    except Exception as _e:
+        pass  # suppressed: use log.debug(_e) to investigate
     return MAX_DAILY
 
 HM_LI_MSG_TEMPLATE = (
@@ -332,3 +421,33 @@ REC_LI_MSG_TEMPLATE = (
     "Would love to connect and discuss how I can contribute and what the next steps look like."
 )
 LI_MSG_MAX = 300
+
+
+def get_ranked_patterns():
+    """
+    Return PAT_A, PAT_B reordered by Brain's global success rates.
+    Falls back to hardcoded order if Brain has < 10 data points.
+    Cached per-process so Brain is only read once per run.
+    """
+    if hasattr(get_ranked_patterns, "_cache"):
+        return get_ranked_patterns._cache
+    try:
+        from outreach.brain import Brain
+        b = Brain.get()
+        total = b._data.get("patterns", {}).get("total_attempts", 0)
+        if total < 10:
+            get_ranked_patterns._cache = (PAT_A, PAT_B, PAT_C)
+            return get_ranked_patterns._cache
+        all_pats = list(dict.fromkeys(PAT_A + PAT_B + PAT_C))
+        ranked = b.rank_patterns_for("_global_", all_pats)
+        # Split back into A/B/C tiers preserving coverage
+        # A tier: top 3 patterns
+        # B tier: next patterns
+        # C tier: remainder
+        new_a = ranked[:3] if len(ranked) >= 3 else PAT_A
+        new_b = [p for p in ranked[3:] if p in PAT_B + PAT_C] or PAT_B
+        new_c = [p for p in PAT_C if p not in new_b]
+        get_ranked_patterns._cache = (new_a, new_b, new_c)
+        return get_ranked_patterns._cache
+    except Exception:
+        return PAT_A, PAT_B, PAT_C

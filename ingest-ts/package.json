@@ -1,0 +1,19 @@
+{
+  "name": "jmi-ingest-ts",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TypeScript ingestion service for Job Market Intelligence: The Muse and Remotive public job APIs",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "start": "node dist/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
+  }
+}

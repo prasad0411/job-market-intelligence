@@ -1,5 +1,8 @@
+import re
 #!/usr/bin/env python3
 """Outreach Pipeline — Data Layer (Sheets, Credits, NameParser, PatternCache)."""
+from outreach.brain import Brain
+from aggregator.atomic_json import write_json as _atomic_write_json
 
 import os, re, json, time, datetime, logging, unicodedata
 import gspread
@@ -104,8 +107,8 @@ class Sheets:
                         },
                     },
                 )
-            except:
-                pass
+            except Exception as _e:
+                log.debug(f"sheets op failed: {_e}")
 
             try:
                 end = _cl(len(O_HEADERS) - 1)
@@ -117,8 +120,8 @@ class Sheets:
                         "textFormat": {"fontFamily": "Times New Roman", "fontSize": 13},
                     },
                 )
-            except:
-                pass
+            except Exception as _e:
+                log.debug(f"sheets op failed: {_e}")
 
             try:
                 self.ss.batch_update(
@@ -133,15 +136,15 @@ class Sheets:
                                         "startColumnIndex": 0,
                                         "endColumnIndex": len(O_HEADERS),
                                     },
-                                    "rule": None,
+                                    "rule": None,  # clear all first
                                 }
                             },
                 
                         ]
                     }
                 )
-            except:
-                pass
+            except Exception as _e:
+                log.debug(f"sheets op failed: {_e}")
 
             try:
                 widths = []
@@ -176,8 +179,8 @@ class Sheets:
                         }
                     )
                 self.ss.batch_update({"requests": widths})
-            except:
-                pass
+            except Exception as _e:
+                log.debug(f"sheets op failed: {_e}")
 
             try:
                 self.ss.batch_update(
@@ -195,8 +198,8 @@ class Sheets:
                         ]
                     }
                 )
-            except:
-                pass
+            except Exception as _e:
+                log.debug(f"sheets op failed: {_e}")
 
             self._p()
         # Always apply body formatting (runs every session, not just creation)
@@ -257,8 +260,8 @@ class Sheets:
             if fmt_requests:
                 self.ss.batch_update({"requests": fmt_requests})
             self._p()
-        except:
-            pass
+        except Exception as _e:
+            log.debug(f"op failed: {_e}")
 
     def pull(self):
         """Full positional sync: mirror Valid sheet order, copy Company/Title/JobID verbatim."""
@@ -295,6 +298,7 @@ class Sheets:
             co = row[V_COMPANY].strip()
             ti = row[V_TITLE].strip() if len(row) > V_TITLE else ""
             jid = row[V_JOBID].strip() if len(row) > V_JOBID else ""
+            spon = row[13].strip() if len(row) > 13 else ""
             if not co:
                 continue
             jid_clean = jid.lower() if jid and jid.lower() != "n/a" else ""
@@ -304,6 +308,33 @@ class Sheets:
             if dedup_key in seen:
                 continue
             seen.add(dedup_key)
+            # Get status and location from Valid Entries
+            _v_status = row[1].strip() if len(row) > 1 else ""
+            _v_location = row[8].strip() if len(row) > 8 else ""
+            _v_role = (row[9].strip().upper() if len(row) > 9 else "")
+            def _clean_city(loc):
+                if not loc or loc.strip().lower() in ("unknown", "n/a", ""):
+                    return ""
+                # split on comma OR mangled " - " ; take first part (the city)
+                c = re.split(r"\s*[,\-]\s*", loc.strip())[0].strip()
+                # drop if it's just a 2-letter state code
+                return "" if len(c) <= 2 else c
+            _hm_term = {"ML": "machine learning manager", "DA": "analytics manager"}.get(_v_role, "engineering manager")
+            # FILTER: Only include jobs that are Applied or previously tracked
+            _has_existing = False
+            if jid_clean:
+                _has_existing = ("jid", jid_clean) in outreach_by_key
+            if not _has_existing:
+                _has_existing = ("co_ti", f"{co.lower()}||{ti.lower()}") in outreach_by_key
+            # Not Applied + never tracked = skip entirely
+            if _v_status.lower() == "not applied":
+                if not _has_existing:
+                    continue  # Never entered outreach
+                else:
+                    continue  # Was Applied, now reverted to Not Applied — remove
+            if not _v_status or _v_status.lower() in ("", "not applied"):
+                if not _has_existing:
+                    continue
 
             # Find existing outreach row
             existing = None
@@ -320,6 +351,21 @@ class Sheets:
                 nr[C["company"]] = co  # verbatim from Valid
                 nr[C["title"]] = ti    # verbatim from Valid
                 nr[C["job_id"]] = jid  # verbatim from Valid
+                # If status just changed to Applied, upgrade extract + add search links
+                if _v_status.lower() == "applied" and nr[C["extract"]].strip().lower() != "yes":
+                    nr[C["extract"]] = "yes"
+                    import urllib.parse as _up
+                    _loc_clean = _v_location.replace(",", "").strip() if _v_location else ""
+                    if not nr[C["hm_li"]] or nr[C["hm_li"]].startswith("https://www.google.com"):
+                        _city = _clean_city(_v_location)
+                        _kw = f"{co} {_hm_term} {_city}".strip()
+                        _geo = "&geoUrn=%5B%22103644278%22%5D"
+                        nr[C["hm_li"]] = f"https://www.linkedin.com/search/results/people/?keywords={_up.quote_plus(_kw)}{_geo}"
+                    if not nr[C["rec_li"]] or nr[C["rec_li"]].startswith("https://www.google.com"):
+                        _city = _clean_city(_v_location)
+                        _kw = f"{co} recruiter {_city}".strip()
+                        _geo = "&geoUrn=%5B%22103644278%22%5D"
+                        nr[C["rec_li"]] = f"https://www.linkedin.com/search/results/people/?keywords={_up.quote_plus(_kw)}{_geo}"
                 # NEVER touch LinkedIn URL columns (F, J) — user enters these manually
                 # Explicitly preserve LinkedIn URLs from existing row
                 for li_col in [C["hm_li"], C["rec_li"]]:
@@ -330,9 +376,81 @@ class Sheets:
                 nr = [""] * len(O_HEADERS)
                 nr[C["company"]] = co
                 nr[C["title"]] = ti
-                nr[C["extract"]] = "Skip"
                 nr[C["job_id"]] = jid
+                # Skip non-Applied jobs entirely (they won't reach here after filter)
+                nr[C["extract"]] = "Skip"
 
+                # ── Smart Extract=yes + contact auto-fill ──────────────────────
+                try:
+                    import re as _re
+                    _b = Brain.get()
+                    _co_key = _re.sub(r"[^a-z0-9]", "", co.lower().strip())
+                    _extract_yes = False
+                    # ONLY extract for Applied jobs
+                    _status = ""
+                    try:
+                        for _vr in vdata[1:]:
+                            if len(_vr) > 2:
+                                _vr_key = _re.sub(r"[^a-z0-9]", "", _vr[2].strip().lower())
+                                if _vr_key == _co_key:
+                                    _status = _vr[1].strip().lower() if len(_vr) > 1 else ""
+                                    break
+                    except Exception as _swx:
+                        from aggregator.swallowed import swallow as _s; _s('outreach_data.pull', _swx)
+                    if _status == "applied":
+                        _extract_yes = True
+                    if _extract_yes:
+                        nr[C["extract"]] = "yes"
+                        # Generate Google search links for HM and Recruiter
+                        import urllib.parse as _up
+                        _loc_clean = _v_location.replace(",", "").strip() if _v_location else ""
+                        if not nr[C["hm_li"]]:
+                            _city2 = _clean_city(_v_location)
+                            _kw2 = f"{co} {_hm_term} {_city2}".strip()
+                            nr[C["hm_li"]] = f"https://www.linkedin.com/search/results/people/?keywords={_up.quote_plus(_kw2)}&geoUrn=%5B%22103644278%22%5D"
+                        if not nr[C["rec_li"]]:
+                            _city3 = _clean_city(_v_location)
+                            _kw3 = f"{co} recruiter {_city3}".strip()
+                            nr[C["rec_li"]] = f"https://www.linkedin.com/search/results/people/?keywords={_up.quote_plus(_kw3)}&geoUrn=%5B%22103644278%22%5D"
+
+                    # AUTO-FILL: exact role match first
+                    for _role, _col_name, _col_email in [
+                        ("hm", "hm_name", "hm_email"),
+                        ("rec", "rec_name", "rec_email"),
+                    ]:
+                        _contact = _b.get_verified_contact(co, _role)
+                        if _contact and _contact.get("email"):
+                            nr[C[_col_name]] = _contact.get("name", "")
+                            nr[C[_col_email]] = _contact["email"]
+                            if _contact.get("linkedin"):
+                                nr[C["hm_li" if _role == "hm" else "rec_li"]] = _contact["linkedin"]
+                            log.info(f"pull: auto-filled {_role} for {co}: {_contact['email']}")
+
+                    # AUTO-FILL: fallback — any non-bounced contact for this company by name
+                    # _co_contacts was never built in this function, so this
+                    # whole fallback raised NameError and never ran. Built the
+                    # same way as line ~603: company_contacts keyed on the
+                    # normalised company name.
+                    _co_contacts = {}
+                    try:
+                        import re as _cc_re
+                        _cc_key = _cc_re.sub(r"[^a-z0-9]", "", str(co).lower().strip())
+                        _co_contacts = (_b._data.get("company_contacts", {})
+                                        or {}).get(_cc_key, {}) or {}
+                    except Exception as _cce:
+                        log.debug(f"company_contacts lookup failed: {_cce}")
+                    if not nr[C["hm_email"]] and not nr[C["rec_email"]] and _co_contacts:
+                        for _rk, _cd in _co_contacts.items():
+                            if _cd.get("email") and not _cd.get("bounced"):
+                                _cn = "hm_name" if _rk == "hm" else "rec_name"
+                                _ce = "hm_email" if _rk == "hm" else "rec_email"
+                                nr[C[_cn]] = _cd.get("name", "")
+                                nr[C[_ce]] = _cd["email"]
+                                log.info(f"pull: company-cache fill for {co}: {_cd['email']}")
+                                break
+
+                except Exception as _bce:
+                    log.debug(f"pull: smart fill failed for {co}: {_bce}")
             result_rows.append(nr)
 
         # Assign sequential Sr. No.
@@ -362,8 +480,8 @@ class Sheets:
                         self.ws.batch_clear, [clear_range]
                     )
                     self._p()
-                except:
-                    pass
+                except Exception as _e:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_data.pull', _e)
 
             # Write all data
             self._retry(
@@ -385,8 +503,70 @@ class Sheets:
                             "textFormat": {"fontFamily": "Times New Roman", "fontSize": 13},
                         },
                     )
-                except:
-                    pass
+                except Exception as _e:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_data.pull', _e)
+
+            # Re-apply hyperlinks for LinkedIn URL columns (batch write destroys them)
+            li_requests = []
+            for row_idx, nr in enumerate(result_rows, start=2):
+                for li_col in [C["hm_li"], C["rec_li"]]:
+                    url_val = nr[li_col].strip() if len(nr) > li_col else ""
+                    if url_val and url_val.startswith("http"):
+                        li_requests.append({
+                            "updateCells": {
+                                "range": {
+                                    "sheetId": self.ws.id,
+                                    "startRowIndex": row_idx - 1,
+                                    "endRowIndex": row_idx,
+                                    "startColumnIndex": li_col,
+                                    "endColumnIndex": li_col + 1,
+                                },
+                                "rows": [{"values": [{
+                                    "userEnteredValue": {"stringValue": url_val},
+                                    "textFormatRuns": [{"startIndex": 0, "format": {"link": {"uri": url_val}}}],
+                                }]}],
+                                "fields": "userEnteredValue,textFormatRuns",
+                            }
+                        })
+            if li_requests:
+                try:
+                    for chunk_i in range(0, len(li_requests), 100):
+                        self.ss.batch_update({"requests": li_requests[chunk_i:chunk_i+100]})
+                        self._p()
+                except Exception as _le:
+                    log.debug(f"LinkedIn hyperlink restore failed: {_le}")
+
+            # Apply Extract dropdown ONLY to populated rows (not empty rows)
+            if new_count > 0:
+                try:
+                    extract_col = C["extract"]
+                    extract_requests = [{
+                        "setDataValidation": {
+                            "range": {
+                                "sheetId": self.ws.id,
+                                "startRowIndex": row_i,  # 0-indexed
+                                "endRowIndex": row_i + 1,
+                                "startColumnIndex": extract_col,
+                                "endColumnIndex": extract_col + 1,
+                            },
+                            "rule": {
+                                "condition": {
+                                    "type": "ONE_OF_LIST",
+                                    "values": [
+                                        {"userEnteredValue": "yes"},
+                                        {"userEnteredValue": "Skip"},
+                                    ],
+                                },
+                                "showCustomUi": True,
+                                "strict": False,
+                            },
+                        }
+                    } for row_i in range(1, new_count + 1)]  # rows 2..N (0-indexed 1..N)
+                    for chunk_i in range(0, len(extract_requests), 100):
+                        self.ss.batch_update({"requests": extract_requests[chunk_i:chunk_i+100]})
+                        self._p()
+                except Exception as _dv:
+                    log.debug(f"Extract dropdown failed: {_dv}")
 
             removed = max(0, old_count - new_count)
             if added > 0:
@@ -400,6 +580,141 @@ class Sheets:
     def sync_with_valid(self):
         """No-op: pull() now handles full sync including deletions."""
         pass
+
+    def auto_fill_from_brain(self):
+        """Auto-fill HM/Recruiter names and emails from Brain contacts.
+        
+        For rows with Extract=yes but empty HM Name:
+        1. Check Brain company_contacts for stored contacts
+        2. Pre-fill name + email if found (skips all API calls at extraction time)
+        
+        Returns count of rows auto-filled.
+        """
+        try:
+            from outreach.brain import Brain
+            import re as _re
+            b = Brain.get()
+            contacts = b._data.get("company_contacts", {})
+            if not contacts:
+                return 0
+
+            data = self.ws.get_all_values()
+            updates = []
+            filled = 0
+
+            for i, r in enumerate(data[1:], start=2):
+                r = _pad(r)
+                co = r[C["company"]].strip()
+                if not co:
+                    continue
+                extract = r[C["extract"]].strip().lower()
+                if extract != "yes":
+                    continue
+
+                co_key = _re.sub(r"[^a-z0-9]", "", co.lower())
+                co_contacts = contacts.get(co_key, {})
+
+                for role, name_col, email_col in [
+                    ("hm", "hm_name", "hm_email"),
+                    ("rec", "rec_name", "rec_email"),
+                ]:
+                    current_name = r[C[name_col]].strip()
+                    current_email = r[C[email_col]].strip()
+
+                    if current_email:
+                        continue  # already has email
+
+                    contact = co_contacts.get(role, {})
+                    if contact and contact.get("email") and not contact.get("bounced"):
+                        name = contact.get("name", "")
+                        email = contact.get("email", "")
+                        # Column letters for batch update
+                        name_letter = chr(65 + C[name_col])  # A=0, B=1, ...
+                        email_letter = chr(65 + C[email_col])
+                        if name and not current_name:
+                            updates.append({"range": f"{name_letter}{i}", "values": [[name]]})
+                        updates.append({"range": f"{email_letter}{i}", "values": [[email]]})
+                        filled += 1
+                        log.info(f"Brain auto-fill: {co} [{role}] → {email}")
+
+            if updates:
+                import time
+                for chunk in range(0, len(updates), 20):
+                    self.ws.batch_update(updates[chunk:chunk+20], value_input_option="USER_ENTERED")
+                    time.sleep(1)
+                log.info(f"Auto-filled {filled} contacts from Brain")
+            return filled
+        except Exception as e:
+            log.warning(f"Brain auto-fill failed: {e}")
+            return 0
+
+    def format_outreach_sheet(self):
+        """
+        Format the Outreach Tracker for efficient manual work:
+        1. Color Extract=yes cells green
+        2. Add LinkedIn search links for companies without HM/Recruiter names
+        3. Add priority indicators
+        """
+        try:
+            import re as _re
+            data = self.ws.get_all_values()
+            if len(data) < 2:
+                return
+
+            ss = self.ws.spreadsheet
+            extract_col = C["extract"]  # Column D (index 3)
+
+            # ── 1. Color Extract=yes cells green ──────────────────────────
+            color_requests = []
+            for i, r in enumerate(data[1:], 1):  # 0-indexed for API
+                r = _pad(r)
+                extract_val = r[extract_col].strip().lower()
+                if extract_val == "yes":
+                    color_requests.append({
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": self.ws.id,
+                                "startRowIndex": i,
+                                "endRowIndex": i + 1,
+                                "startColumnIndex": extract_col,
+                                "endColumnIndex": extract_col + 1,
+                            },
+                            "cell": {"userEnteredFormat": {
+                                "backgroundColor": {"red": 0.58, "green": 0.93, "blue": 0.31},
+                                "textFormat": {"bold": True},
+                            }},
+                            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.bold",
+                        }
+                    })
+                elif extract_val == "skip":
+                    color_requests.append({
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": self.ws.id,
+                                "startRowIndex": i,
+                                "endRowIndex": i + 1,
+                                "startColumnIndex": extract_col,
+                                "endColumnIndex": extract_col + 1,
+                            },
+                            "cell": {"userEnteredFormat": {
+                                "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                            }},
+                            "fields": "userEnteredFormat.backgroundColor",
+                        }
+                    })
+
+            if color_requests:
+                import time
+                for chunk in range(0, len(color_requests), 200):
+                    ss.batch_update({"requests": color_requests[chunk:chunk+200]})
+                    time.sleep(0.5)
+                log.info(f"Formatted {len(color_requests)} Extract cells")
+
+            return len(color_requests)
+
+        except Exception as e:
+            log.warning(f"Outreach formatting failed: {e}")
+            return 0
 
     def rows_for_extraction(self):
         data = self.ws.get_all_values()
@@ -427,13 +742,44 @@ class Sheets:
             he, re_ = r[C["hm_email"]].strip(), r[C["rec_email"]].strip()
             err = ""  # Error Log column removed — errors in .local/outreach.log
 
+            # FIX 1: Skip rows not marked for extraction
+            extract_val = r[C["extract"]].strip().lower()
+            if extract_val != "yes":
+                continue
+
+            # Auto-resolve: if name field contains LinkedIn URL, use it as the URL
+            # and extract name from it during find()
+            import re as _re_li
+            def _resolve_li_name(name_val, li_val):
+                """If name looks like a LinkedIn URL, swap into li field."""
+                if not name_val:
+                    return name_val, li_val
+                parts = [p.strip() for p in name_val.split(",") if p.strip()]
+                resolved_names = []
+                for part in parts:
+                    if _re_li.search(r"linkedin\.com/in/", part):
+                        # Name field has a LinkedIn URL — use it as li if li is empty
+                        if not li_val:
+                            li_val = part
+                        # Return empty name — finder will extract from URL
+                        resolved_names.append(part)  # keep URL as name; finder handles it
+                    else:
+                        resolved_names.append(part)
+                return ", ".join(resolved_names), li_val
+
+            hn, hli = _resolve_li_name(hn, r[C["hm_li"]].strip())
+            rn, rli = _resolve_li_name(rn, r[C["rec_li"]].strip())
+
             hn_list = [n.strip() for n in hn.split(",") if n.strip()] if hn else []
             rn_list = [n.strip() for n in rn.split(",") if n.strip()] if rn else []
-            hn = hn_list[0] if hn_list else ""
-            rn = rn_list[0] if rn_list else ""
+            hn = ", ".join(hn_list)
+            rn = ", ".join(rn_list)
 
-            need_h = bool(hn) and not he and "HM:" not in err
-            need_r = bool(rn) and not re_ and "REC:" not in err
+            # Also queue if LinkedIn URL exists but name is empty — finder extracts name from URL
+            hli_val = r[C["hm_li"]].strip()
+            rli_val = r[C["rec_li"]].strip()
+            need_h = (bool(hn) or bool(hli_val)) and not he and "HM:" not in err
+            need_r = (bool(rn) or bool(rli_val)) and not re_ and "REC:" not in err
 
             if need_h:
                 dup = ecache.get((hn.lower(), co.lower()))
@@ -592,30 +938,53 @@ class Sheets:
             try:
                 if os.path.exists(failed_file):
                     failed = json.load(open(failed_file))
-            except:
-                pass
+            except Exception as _e:
+                log.debug(f"sheets op failed: {_e}")
             if domain not in failed:
                 failed[domain] = []
+            # FIX 4: store both local part AND pattern string for domain-wide blocking
             if bounced_local not in failed[domain]:
                 failed[domain].append(bounced_local)
-                try:
-                    json.dump(failed, open(failed_file, "w"), indent=2)
-                except:
-                    pass
+            _f = parsed["fa"].lower() if parsed else ""
+            _la = parsed["lc"] if parsed else ""
+            _fi = parsed["fi"] if parsed else ""
+            _li = parsed["li"] if parsed else ""
+            from outreach.outreach_config import PAT_A, PAT_B, PAT_C
+            for _pat in PAT_A + PAT_B + PAT_C:
+                _gen = (_pat.replace("{first}", _f).replace("{last}", _la)
+                            .replace("{f}", _fi).replace("{l}", _li))
+                if _gen == bounced_local and _pat not in failed[domain]:
+                    failed[domain].append(_pat)
+                    break
+            try:
+                _atomic_write_json(failed_file, failed)
+            except Exception as _e:
+                log.debug(f"sheets op failed: {_e}")
 
-            # Generate alternatives, skipping the failed pattern
-            from outreach.outreach_config import PAT_A, PAT_B
+            from outreach.outreach_config import PAT_A, PAT_B, PAT_C
+            b = Brain.get()
             f = parsed["fa"].lower()
             la = parsed["lc"]
             fi = parsed["fi"]
             li = parsed["li"]
-
+            # Record bounce in Brain
+            for _p in PAT_A + PAT_B + PAT_C:
+                _gen = (_p.replace("{first}", f).replace("{last}", la)
+                          .replace("{f}", fi).replace("{l}", li))
+                if _gen == bounced_local:
+                    b.record_pattern_failure(domain, _p)
+                    break
+            # Rank candidates by Brain Bayesian posterior
+            all_pats = list(dict.fromkeys(PAT_A + PAT_B))
+            ranked_pats = b.rank_patterns_for(domain, all_pats)
             candidates = []
-            for pat in PAT_A + PAT_B:
+            for pat in ranked_pats:
                 local = (pat.replace("{first}", f).replace("{last}", la)
                            .replace("{f}", fi).replace("{l}", li))
-                if local and local != bounced_local and local not in failed.get(domain, []):
-                    candidates.append(f"{local}@{domain}")
+                if (local and local != bounced_local
+                        and local not in failed.get(domain, [])
+                        and not b.is_failed_pattern(domain, pat)):
+                    candidates.append((f"{local}@{domain}", pat))
 
             if not candidates:
                 return None
@@ -624,27 +993,21 @@ class Sheets:
             try:
                 from outreach.outreach_provider import ProviderVerifier
                 pv = ProviderVerifier()
-                for candidate in candidates[:5]:  # Max 5 attempts
+                for candidate, cand_pat in candidates[:5]:
                     result = pv.verify_email(candidate, domain)
                     if result == "exists":
-                        # Store the working pattern
-                        new_local = candidate.split("@")[0]
-                        new_pat = (pat for pat in PAT_A + PAT_B
-                                   if pat.replace("{first}", f).replace("{last}", la)
-                                       .replace("{f}", fi).replace("{l}", li) == new_local)
-                        pat_str = next(new_pat, None)
-                        if pat_str:
-                            pc.store(domain, pat_str)
+                        pc.store(domain, cand_pat)
+                        b.record_pattern_success(domain, cand_pat, candidate)
                         log.info(f"Bounce retry verified: {candidate}")
                         return candidate
+                    else:
+                        b.record_pattern_failure(domain, cand_pat)
             except Exception as e:
                 log.debug(f"Bounce retry verification failed: {e}")
 
-            # If no verification available, try statistical best guess
-            # Skip the bounced pattern and return the next most common
             if candidates:
-                log.info(f"Bounce retry (unverified): {candidates[0]}")
-                return candidates[0]
+                log.info(f"Bounce retry (unverified): {candidates[0][0]}")
+                return candidates[0][0]
 
         except Exception as e:
             log.debug(f"_retry_bounced_email failed: {e}")
@@ -663,6 +1026,15 @@ class Sheets:
                 hn = r[C["hm_name"]].strip()
                 rn = r[C["rec_name"]].strip()
                 if not co:
+                    continue
+                # FIX 9: skip rows not marked for extraction
+                extract_val = r[C["extract"]].strip().lower() if len(r) > C["extract"] else ""
+                if extract_val != "yes":
+                    continue
+                # Skip if no emails discovered yet — LinkedIn msg without email is useless
+                he = r[C["hm_email"]].strip() if len(r) > C["hm_email"] else ""
+                re_ = r[C["rec_email"]].strip() if len(r) > C["rec_email"] else ""
+                if not he and not re_:
                     continue
                 # HM LinkedIn Msg (supports multiple comma-separated names)
                 hm_existing = r[C["hm_li_msg"]].strip() if len(r) > C["hm_li_msg"] else ""
@@ -811,23 +1183,30 @@ class Sheets:
         """Errors logged to .local/outreach.log only — no sheet column."""
         log.debug(f"Row {row}: {msg}")
 
+    def _build_resume_cache(self):
+        """Build resume cache from Valid Entries. Safe to call multiple times."""
+        try:
+            valid = self.ss.worksheet("Valid Entries")
+            rows = valid.get_all_values()
+            self._p()
+            Sheets._resume_cache = {}
+            for row in rows[1:]:
+                if len(row) > V_RESUME:
+                    key = (
+                        row[V_COMPANY].strip().lower(),
+                        row[V_TITLE].strip().lower(),
+                    )
+                    r = row[V_RESUME].strip()
+                    Sheets._resume_cache[key] = r if r in ("SDE", "ML", "DA") else "SDE"
+        except Exception as e:
+            import logging as _log
+            _log.getLogger(__name__).debug(f"resume cache build failed: {e}")
+            if Sheets._resume_cache is None:
+                Sheets._resume_cache = {}
+
     def get_resume_type(self, company, title):
         if Sheets._resume_cache is None:
-            try:
-                valid = self.ss.worksheet("Valid Entries")
-                rows = valid.get_all_values()
-                self._p()
-                Sheets._resume_cache = {}
-                for row in rows[1:]:
-                    if len(row) > V_RESUME:
-                        key = (
-                            row[V_COMPANY].strip().lower(),
-                            row[V_TITLE].strip().lower(),
-                        )
-                        r = row[V_RESUME].strip()
-                        Sheets._resume_cache[key] = r if r in ("SDE", "ML") else "SDE"
-            except:
-                Sheets._resume_cache = {}
+            self._build_resume_cache()
         return Sheets._resume_cache.get(
             (company.strip().lower(), title.strip().lower()), "SDE"
         )
@@ -846,7 +1225,8 @@ class Sheets:
                             row[V_TITLE].strip().lower(),
                         )
                         Sheets._location_cache[key] = row[8].strip()
-            except:
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
                 Sheets._location_cache = {}
         return Sheets._location_cache.get(
             (company.strip().lower(), title.strip().lower()), ""
@@ -880,9 +1260,10 @@ class Sheets:
                                        "indeed.com", "ziprecruiter.com", "glassdoor.com", "jobright.ai"}
                             if not any(g in domain for g in generic):
                                 Sheets._url_domain_cache[key] = domain
-                        except:
-                            pass
-            except:
+                        except Exception as _e:
+                            from aggregator.swallowed import swallow as _s; _s('outreach_data.get_job_url_domain', _e)
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
                 Sheets._url_domain_cache = {}
         return Sheets._url_domain_cache.get(
             (company.strip().lower(), title.strip().lower()), ""
@@ -915,8 +1296,8 @@ class Sheets:
                             if name in location.lower():
                                 state_code = code
                                 break
-                    except:
-                        pass
+                    except Exception as _e:
+                        from aggregator.swallowed import swallow as _s; _s('outreach_data.compute_send_at', _e)
                 if state_code and state_code in STATE_TO_TIMEZONE:
                     tz_name = STATE_TO_TIMEZONE[state_code]
 
@@ -944,8 +1325,19 @@ class Sheets:
 
     @staticmethod
     def _fallback_send_at():
-        now = datetime.datetime.now()
-        target = now.replace(hour=11, minute=0) + datetime.timedelta(days=1)
+        """Used when the location has no parseable state.
+
+        datetime.now() is server-local: on a GitHub runner that is UTC, so the
+        old naive 11:00 was really 07:00 ET. Anchor to Eastern explicitly and
+        label it honestly.
+        """
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.datetime.now(ZoneInfo("US/Eastern"))
+        except Exception:
+            now = datetime.datetime.now()
+        target = now.replace(hour=11, minute=0, second=0, microsecond=0)
+        target += datetime.timedelta(days=1)
         while target.weekday() >= 5:
             target += datetime.timedelta(days=1)
         return target.strftime("%b %d, 11:00 AM ET"), target.strftime("%b %d, %Y")
@@ -989,16 +1381,16 @@ class Credits:
                 self._d = json.load(open(CREDITS_FILE))
                 self._auto_reset()
                 return
-            except:
-                pass
+            except Exception as _e:
+                log.debug(f"sheets op failed: {_e}")
         self._d = self._default()
         self._save()
 
     def _save(self):
         try:
-            json.dump(self._d, open(CREDITS_FILE, "w"), indent=2)
-        except:
-            pass
+            _atomic_write_json(CREDITS_FILE, self._d)
+        except Exception as _e:
+            log.debug(f"op failed: {_e}")
 
     def _auto_reset(self):
         today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -1022,8 +1414,8 @@ class Credits:
                             "ok": True,
                         }
                         ch = True
-                except:
-                    pass
+                except Exception as _e:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_data._auto_reset', _e)
             if n not in self._d:
                 self._d[n] = {
                     "lim": APIS[n]["limit"],
@@ -1048,6 +1440,27 @@ class Credits:
         if e["used"] >= e.get("lim", 0):
             e["ok"] = False
         self._save()
+        try:
+            Brain.get().record_api_result(p, credit_used=True, email_found=False)
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_data.use', _swx)
+
+    def record_email_found(self, api_name: str):
+        """Call when an API returns a valid email — tracks ROI per credit."""
+        try:
+            Brain.get().record_api_result(api_name, credit_used=False, email_found=True)
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_data.record_email_found', _swx)
+
+    def burn_rate_alerts(self) -> list:
+        """Return alert strings for APIs approaching monthly exhaustion."""
+        b = Brain.get()
+        alerts = []
+        for name, cfg in APIS.items():
+            alert = b.api_burn_rate_alert(name, cfg.get("limit", 0))
+            if alert:
+                alerts.append(alert)
+        return alerts
 
     def gmail_left(self):
         return self.avail("gmail")
@@ -1075,6 +1488,34 @@ class NameParser:
         if not name or not name.strip():
             return None
         n = name.strip()
+        # If comma-separated multi-name like "John Smith, Jane Doe" — take first
+        # (multi-name handling is done at caller level by splitting on comma)
+        if "," in n:
+            # Check if it looks like "Last, First" (single person) or "Name1, Name2" (multi)
+            parts = [p.strip() for p in n.split(",")]
+            if len(parts) >= 2:
+                # Heuristic: if second part has a space, it's multi-person
+                if " " in parts[1] or len(parts) > 2:
+                    # Multi-person: take only first
+                    n = parts[0]
+                # else it's "Last, First" format — handled below
+        # Step 1: Strip parentheticals FIRST e.g. "Joanna (Maskas) Clark" → "Joanna Clark"
+        import re as _re
+        n = _re.sub(r"\([^)]*\)\s*", "", n).strip()
+        # Step 2: Strip academic credentials e.g. "Kelsey Anderson, M.S." → "Kelsey Anderson"
+        # Runs BEFORE comma-split so credentials after comma don't confuse Last/First detection
+        _creds_pat = (
+            r"(?:,\s*|\s+)"
+            r"\b(?:M\.?S|Ph\.?D|M\.?B\.?A|M\.?D|J\.?D|D\.?O|R\.?N|"
+            r"C\.?P\.?A|P\.?E|D\.?V\.?M|Pharm\.?D|Ed\.?D|Psy\.?D|"
+            r"Sc\.?D|LL\.?[MB]|B\.?[SAE])\.?\b"
+        )
+        n = _re.sub(_creds_pat, "", n, flags=_re.I).strip().rstrip(",").strip()
+        # Step 3: Strip trailing degree words
+        n = _re.sub(
+            r",?\s+(?:Masters?|Bachelors?|Doctor(?:ate)?|Engineer|Prof(?:essor)?)\s*\.?\s*$",
+            "", n, flags=_re.I
+        ).strip()
         if "," in n:
             parts = [p.strip() for p in n.split(",", 1)]
             if len(parts) == 2 and parts[0] and parts[1]:
@@ -1173,10 +1614,18 @@ _SEED = {
     "netflix.com": "{first}.{last}",
     "salesforce.com": "{first}.{last}",
     "stripe.com": "{first}.{last}",
+    "bain.com": "{first}.{last}",
+    "neuralink.com": "{first}.{last}",
+    "rivian.com": "{first}.{last}",
+    "northwesternmutual.com": "{first}.{last}",
+    "f5.com": "{first}.{last}",
+    "hp.com": "{first}.{last}",
+    "seismic.com": "{first}.{last}",
+    "inogen.com": "{first}.{last}",
+    "snowflake.com": "{first}.{last}",
     "uber.com": "{first}.{last}",
     "airbnb.com": "{first}.{last}",
     "figma.com": "{first}.{last}",
-    "snowflake.com": "{first}.{last}",
     "servicenow.com": "{first}.{last}",
     "intuit.com": "{first}.{last}",
     "oracle.com": "{first}.{last}",
@@ -1208,19 +1657,37 @@ _SEED = {
 
 
 class PatternCache:
-    def __init__(self):
+    _singleton = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._singleton is None:
+            inst = object.__new__(cls)
+            inst._init()
+            cls._singleton = inst
+        return cls._singleton
+
+    def _init(self):
         self._d = dict(_SEED)
         if os.path.exists(PATTERNS_FILE):
             try:
                 self._d.update(json.load(open(PATTERNS_FILE)))
-            except:
-                pass
+            except Exception as _e:
+                log.debug(f"PatternCache load failed: {_e}")
+        try:
+            b = Brain.get()
+            for domain, entry in b._data.get("domains", {}).items():
+                pat = entry.get("email_pattern")
+                conf = entry.get("pattern_confidence", 0.0)
+                if pat and conf >= 0.5 and domain not in self._d:
+                    self._d[domain] = pat
+        except Exception as _be:
+            log.debug(f"Brain→PatternCache merge failed: {_be}")
 
     def _save(self):
         try:
-            json.dump(self._d, open(PATTERNS_FILE, "w"), indent=2)
-        except:
-            pass
+            _atomic_write_json(PATTERNS_FILE, self._d)
+        except Exception as _e:
+            log.debug(f"op failed: {_e}")
 
     def get(self, domain):
         return self._d.get(domain.lower())
@@ -1228,6 +1695,10 @@ class PatternCache:
     def store(self, domain, pat):
         self._d[domain.lower()] = pat
         self._save()
+        try:
+            Brain.get().record_pattern_success(domain, pat, "")
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_data.store', _swx)
 
     def detect(self, email, parsed):
         if not email or "@" not in email or not parsed:
@@ -1247,7 +1718,13 @@ class PatternCache:
         return None
 
     def gen_single(self, parsed, domain):
-        p = self.get(domain)
+        b = Brain.get()
+        p = b.best_pattern_for(domain) or self.get(domain)
+        if not p:
+            from outreach.outreach_config import PAT_A, PAT_B, PAT_C
+            all_pats = list(dict.fromkeys(PAT_A + PAT_B + PAT_C))
+            ranked = b.rank_patterns_for(domain, all_pats)
+            p = ranked[0] if ranked else None
         if not p or not parsed:
             return None
         f, la, fi, li = parsed["fa"].lower(), parsed["lc"], parsed["fi"], parsed["li"]
@@ -1282,5 +1759,7 @@ def _ascii(text):
         n = unicodedata.normalize("NFKD", text)
         a = n.encode("ASCII", "ignore").decode("ASCII")
         return a if a else text
-    except:
+    except Exception as _e:
+        logging.debug("suppressed: %s", _e)
         return text
+

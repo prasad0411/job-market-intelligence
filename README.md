@@ -1,339 +1,588 @@
-# Automated Job Hunt Pipeline
+# Job Market Intelligence Platform
 
-End-to-end system that aggregates 8,000+ weekly internship postings, validates eligibility, discovers hiring manager emails, and creates personalized outreach drafts — all automatically.
+[![CI](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ci.yml)
+[![dashboard](https://github.com/prasad0411/job-market-intelligence/actions/workflows/dashboard.yml/badge.svg)](https://github.com/prasad0411/job-market-intelligence/actions/workflows/dashboard.yml)
+[![ingest-ts](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ingest-ts.yml/badge.svg)](https://github.com/prasad0411/job-market-intelligence/actions/workflows/ingest-ts.yml)
+[![Tests](https://img.shields.io/badge/tests-323_passing-brightgreen)](tests/)
+[![Preflight](https://img.shields.io/badge/preflight-19_wiring_checks-blue)](aggregator/preflight.py)
+[![dbt](https://img.shields.io/badge/dbt-35_data_tests-FF694B?logo=dbt&logoColor=white)](data_platform/dbt/)
+[![Python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Sources](https://img.shields.io/badge/sources-29_·_1000%2B_ATS_boards-orange)](#data-sources)
 
-**Built by [Prasad Kanade](https://www.linkedin.com/in/prasad-kanade-/) | MS Computer Science @ Northeastern University**
+[![Live demo](https://img.shields.io/badge/Live_demo-dashboard-2c5364?style=for-the-badge&logo=react&logoColor=white)](https://prasad0411.github.io/job-market-intelligence/)
 
-## What It Does
+**Live demo:** [prasad0411.github.io/job-market-intelligence](https://prasad0411.github.io/job-market-intelligence/), a public snapshot of the real pipeline, republished nightly.
 
-Two Python modules work together to automate the entire job search workflow:
+A self-maintaining data platform that aggregates early-career software engineering
+roles from 21 tracked feeds and over 1,000 discovered applicant-tracking-system boards —
+then deduplicates, validates, enriches with official H-1B sponsorship data, and
+lands the survivors in both a tracked spreadsheet and a partitioned analytics
+lakehouse, three times a day.
 
-**Module 1 — Job Aggregator** scrapes GitHub repositories (SimplifyJobs, vanshb03) and Gmail alerts (Jobright, SWE List, ZipRecruiter, Company Newsletters), validates each job against 25+ eligibility criteria, deduplicates across 1,500+ tracked entries, and maintains an organized Google Sheets tracker.
+It is built around one assumption: **every component will eventually fail
+silently, including the components built to detect failure.** Most of the design
+below follows from taking that seriously.
 
-**Module 2 — Outreach Pipeline** takes validated jobs, mirrors them to an Outreach Tracker sheet in exact order, discovers hiring manager and recruiter email addresses through an 8-layer verification system, creates personalized email drafts in Gmail with resume attachment, schedules timezone-aware delivery, tracks delivery status, auto-retries bounced emails with alternative patterns, and generates LinkedIn connection messages for both HMs and recruiters.
+---
 
-**Impact:** 6 hours/week → 45 minutes/week. Zero duplicate applications. 98%+ classification accuracy. 25+ outreach emails generated per run.
+## Contents
 
-## Screenshots
+- [Architecture](#architecture)
+- [Data platform](#data-platform)
+- [Data sources](#data-sources)
+- [Dashboard](#dashboard)
+- [TypeScript ingestion](#typescript-ingestion)
+- [Engineering decisions](#engineering-decisions)
+- [Self-maintenance](#self-maintenance)
+- [Failure modes](#failure-modes)
+- [Running it](#running-it)
+- [Project layout](#project-layout)
+- [Testing philosophy](#testing-philosophy)
 
-### Aggregator Terminal Output
-
-Processing jobs from GitHub repos and email sources with real-time validation feedback.
-
-![Aggregator Output](docs/screenshots/aggregator_terminal.png)
-
-### Aggregator Summary
-
-Breakdown of valid, discarded, and duplicate jobs across all sources.
-
-![Aggregator Summary](docs/screenshots/aggregator_summary.png)
-
-### Valid Entries Sheet
-
-Validated internship postings with status, company, title, date applied, job URL and other fields.
-
-![Valid Entries](docs/screenshots/valid_entries.png)
-
-### Valid Entries Detail
-
-Job metadata including job type, location, remote status, entry timestamp and source.
-
-![Valid Entries Detail](docs/screenshots/valid_entries_detail.png)
-
-### Outreach Tracker Sheet
-
-Email outreach tracking with HM/recruiter names, LinkedIn URLs, discovered emails, LinkedIn messages, scheduled send times, and delivery notes.
-
-![Outreach Tracker](docs/screenshots/outreach_tracker.png)
-
-### Outreach Tracker Detail
-
-Recruiter LinkedIn URLs, emails, LinkedIn messages, Send At scheduling, and sent date tracking.
-
-![Outreach Tracker Detail](docs/screenshots/outreach_tracker_detail.png)
-
-### Gmail Drafts
-
-Personalized email drafts auto-created in Gmail with resume attachment, ready for scheduled sending.
-
-![Gmail Drafts](docs/screenshots/gmail_drafts.png)
-
-### GitHub Actions Automation
-Three automated workflows running on schedule — aggregator (every 6 hours), outreach (daily at 2 AM ET), and email sender (6x daily Mon-Fri).
-
-![GitHub Actions](docs/screenshots/github_actions.png)
-
-## How It Works
-
-### Job Aggregation Pipeline
-
-```
-GitHub Repos + Gmail Alerts
-    → Parse 2,000+ weekly postings
-    → Resolve redirects (SimplifyJobs, Jobright, ZipRecruiter)
-    → Detect INACTIVE Simplify listings (auto-skip)
-    → Extract metadata from Simplify pages (location, remote, sponsorship)
-    → Fetch career pages (Selenium + BeautifulSoup)
-    → Extract metadata (company, location, job ID, type)
-    → 25-stage validation (visa, degree, geography, role type, posting age...)
-    → Multi-signal deduplication (URL + company|title + job ID)
-    → Company name normalization (20+ alias mappings)
-    → Google Sheets output
-```
-
-The aggregator processes jobs from multiple sources simultaneously. Each job passes through eligibility filters including F-1 visa requirements, explicit foreign national rejection detection, security clearance detection, degree level filtering (BA/BS-only and PhD-only detection), undergraduate-only role detection, geographic restrictions (40+ international countries detected), posting age validation (including ZipRecruiter 3-day freshness check), season verification, expired job detection, and smart deduplication that catches the same job posted across different platforms.
-
-### Email Discovery Pipeline
-
-```
-Company + Hiring Manager Name
-    │
-    ▼
-Layer 1: Seed pattern cache (35+ companies, instant)
-Layer 2: Microsoft 365 verification (definitive yes/no)
-Layer 3: Website pattern mining (scrapes company sites)
-Layer 4: Reacher SMTP verification (Docker-based)
-Layer 5: Reacher pattern search
-Layer 6: API cascade (Hunter)
-Layer 7: Microsoft 365 pattern discovery (tries 5 formats)
-Layer 8: Statistical inference (80% of companies use first.last)
-    │
-    ▼
-Gmail Draft Created → Delivery Tracking → Bounce Auto-Retry
-```
-
-The system learns over time. Every successful email discovery teaches it the pattern for that company's entire domain. Failed patterns are stored and never retried. After two weeks of operation, most companies resolve instantly from cache. Supports multiple comma-separated HM/Recruiter names per row — each person gets an individual email.
-
-### Outreach Lifecycle
-
-```
-Job validated → Synced to Outreach Tracker (exact Valid sheet order)
-    → Email discovered for HM/Recruiter
-    → Personalized Gmail draft created with resume attachment
-    → Scheduled for delivery in company's timezone
-    → LinkedIn messages generated (separate templates for HM and Recruiter)
-    → Email sent at scheduled time
-    → [12 hours pass]
-    → No bounce detected → Notes: "Delivered to HM and Rec"
-    → Bounce detected → Notes: "HM email bounced on Mar 01, 2026"
-        → Auto-retry with alternative email pattern
-        → Notes updated: "Retried: flast@co.com"
-```
-
-## Key Features
-
-### Multi-Source Aggregation
-
-- GitHub repositories (SimplifyJobs, vanshb03) with section category trust
-- Gmail API integration (Jobright alerts, SWE List, ZipRecruiter emails)
-- Simplify URL resolution (5 methods including Next.js JSON extraction)
-- Simplify metadata extraction (location, remote status, sponsorship from page text)
-- INACTIVE job detection on Simplify pages
-- ZipRecruiter page age validation (rejects postings older than 3 days)
-- Selenium fallback for JavaScript-heavy career pages (Workday, Oracle, Ashby)
-
-### 25-Stage Validation
-
-- Company and platform blacklists
-- Security clearance and US Person requirements
-- Explicit F-1/foreign national visa rejection detection
-- Degree level filtering (BA/BS-only and PhD-only roles)
-- Undergraduate-only role detection (junior/senior status, pursuing bachelor's)
-- Geographic restrictions (40+ international countries in title, location, URL)
-- Ambiguous city disambiguation (Burlington MA vs Burlington ON)
-- Permanent US work authorization detection
-- Graduation year alignment (May 2027)
-- Job posting age validation (configurable threshold)
-- Smart season detection (ignores copyright years, financial data)
-- Non-CS/Engineering role filtering with GitHub category override
-- Expired job detection (20+ dead page patterns)
-- ATS platform company name extraction (Workday, Greenhouse, Lever, iCIMS, UltiPro, Jobvite)
-- Company name normalization with legal suffix stripping and acronym preservation
-
-### Intelligent Deduplication
-
-- URL normalization and matching
-- Company + title fuzzy matching
-- Job ID cross-reference
-- Company name normalization (20+ alias mappings: WD/Sandisk → Western Digital, Boxinc → Box)
-
-### Email Discovery and Verification
-
-- Provider detection: MX record lookup identifies Google Workspace (~40%) vs Microsoft 365 (~35%) vs self-hosted
-- Microsoft 365 verification: Definitive email existence check via GetCredentialType endpoint
-- Website mining: Scrapes company about/team/contact pages for @domain emails to learn patterns
-- Pattern learning: Every successful discovery teaches the pattern for that entire company domain
-- Statistical inference: When all else fails, uses the most common pattern (first.last, 80% accuracy)
-- Multi-person support: Comma-separated names generate individual emails for each contact
-- Anti-bot measures: 2-3 second delays, rotating user agents, catch-all detection
-
-### Delivery Tracking and Bounce Recovery
-
-- Bounce scanner reads Gmail for delivery failure notifications (RFC 3464 DSN parsing)
-- Failed emails are cleared and noted in plain language
-- Auto-retry generates alternative email patterns, skipping the failed one
-- Failed patterns stored permanently to prevent repeating mistakes
-- Delivery confirmed after 12 hours with no bounce
-- Late bounces overwrite delivery status (bounce is always the truth)
-
-### Dual LinkedIn Message Generation
-
-- Separate templates for Hiring Managers and Recruiters
-- HM message emphasizes team contribution and role fit
-- Recruiter message emphasizes eagerness and next steps
-- Supports multiple comma-separated names per row
-- Auto-truncates long titles to stay within LinkedIn's 300-character limit
-
-### Self-Improving System
-
-- Pattern cache grows with every run and learns email formats automatically
-- Failed Simplify URLs retried after 8 hours instead of being permanently skipped
-- Retry tracker with 3-day TTL prevents infinite loops on undiscoverable companies
-- MX cache and email verification cache prevent redundant lookups
-- Domain overrides for companies with wrong Clearbit results
-- Outreach sheet stays perfectly synchronized with Valid Entries (exact order, verbatim names)
-- LinkedIn URL columns are read-only — never overwritten by automation
-
-## Performance
-
-| Metric                  | Before      | After              |
-| ----------------------- | ----------- | ------------------ |
-| Weekly manual work      | 6 hours     | 45 minutes         |
-| Job processing time     | 40 min      | 10 min             |
-| Duplicate applications  | 2-5/run     | 0                  |
-| Classification accuracy | ~85%        | 98%+               |
-| Email extraction rate   | 0% (manual) | ~95% automated     |
-| Outreach emails/run     | 0 (manual)  | 25+                |
-| LinkedIn messages/run   | 0 (manual)  | 25+ auto-generated |
-
-## Tech Stack
-
-**Core:** Python 3.10+, Google Sheets API, Gmail API
-
-**Web Scraping:** Selenium WebDriver, BeautifulSoup4, Requests, lxml
-
-**Email Discovery:** dnspython (MX records), Reacher (SMTP verification via Docker), Hunter API, Microsoft 365 GetCredentialType
-
-**Infrastructure:** Docker (Reacher container), Google Cloud service accounts, OAuth 2.0
-
-**Codebase:** 12,000+ lines across 14 production modules
+---
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    subgraph INGEST["Ingest"]
+        A1["12 GitHub feeds<br/>markdown + HTML tables"]
+        A2["1,000+ ATS boards<br/>Greenhouse · Lever · Ashby<br/>Workday · SmartRecruiters<br/>Workable · Rippling"]
+        A3["Indeed<br/>6 targeted queries"]
+        A4["Email<br/>LinkedIn · Jobright alerts"]
+    end
+
+    subgraph GATE["Filter — cheapest checks first"]
+        B1["GATE 0 · term filter<br/>drops Summer 2027 only"]
+        B2["GATE 1 · blacklist<br/>clearance + non-tech companies"]
+        B3["Age gate · fallback ladder<br/>API date → page date → feed age"]
+        B4["Dedup · strongest signal wins<br/>job_id → URL → company+title → fuzzy"]
+        B5["Title gate<br/>seniority · PhD-only · non-tech"]
+    end
+
+    subgraph ENRICH["Enrich"]
+        C1["ATS resolver<br/>1,000+ boards → real apply URL"]
+        C2["H-1B lookup<br/>121,935 USCIS employers"]
+        C3["Quality scorer<br/>rejects shifted rows"]
+    end
+
+    subgraph WRITE["Persist"]
+        D1["Write-ahead log"]
+        D2["Circuit breaker"]
+        D3["Google Sheets · 15 columns"]
+    end
+
+    subgraph LEARN["Learn"]
+        E1["quality_gate<br/>audits what was written"]
+        E2["brain.json<br/>slugs · non-tech · clearance"]
+        E3["ats_discovery<br/>finds new boards nightly"]
+    end
+
+    A1 & A2 & A3 & A4 --> B1 --> B2 --> B3 --> B4 --> B5
+    B5 --> C1 --> C2 --> C3 --> D1 --> D2 --> D3
+    D3 --> E1 --> E2 --> B2
+    E3 --> A2
 ```
-Job Hunt Tracker/
-├── aggregator/                # Module 1: Job aggregation
-│   ├── config.py              # Patterns, blacklists, normalizations (1,500+ lines)
-│   ├── extractors.py          # Page fetching, Simplify resolution, GitHub scraper
-│   ├── processors.py          # Validation, extraction, location processing
-│   ├── run_aggregator.py      # Pipeline orchestration
-│   ├── sheets_manager.py      # Google Sheets integration
-│   └── utils.py               # HTTP retry, sanitization, date parsing
-├── outreach/                  # Module 2: Email outreach
-│   ├── outreach_config.py     # Column mapping, email templates, API keys
-│   ├── outreach_data.py       # Sheets sync, PatternCache, NameParser, bounce handling
-│   ├── outreach_finder.py     # 8-layer email discovery pipeline
-│   ├── outreach_mailer.py     # Gmail draft creation with resume attachment
-│   ├── outreach_provider.py   # MX lookup, Microsoft 365, website mining
-│   ├── bounce_scanner.py      # Gmail bounce detection (RFC 3464)
-│   └── run_outreach.py        # Pipeline orchestration, delivery tracking
-├── scripts/                   # Maintenance utilities
-├── .local/                    # Credentials, caches, logs (gitignored)
-│   ├── credentials.json       # Google Sheets service account
-│   ├── gmail_credentials.json # Gmail OAuth client
-│   ├── gmail_token.pickle     # Gmail OAuth token
-│   ├── domain_overrides.json  # Manual company-to-domain fixes
-│   ├── failed_patterns.json   # Bounced email patterns (never retried)
-│   ├── bounced_emails.json    # Known bounced addresses
-│   ├── outreach_patterns.json # Learned email patterns per domain
-│   ├── retry_tracker.json     # Failed companies (3-day TTL)
-│   └── outreach.log           # Rotating log (5MB × 3)
-├── docs/screenshots/          # README images
-├── docker-compose.yml         # Reacher email verifier
-├── requirements.txt
-└── README.md
+
+Every run begins with a **preflight check** that verifies the wiring above is
+actually connected — see [Self-maintenance](#self-maintenance).
+
+---
+
+## Data platform
+
+The operational pipeline writes a fact table; a separate layer turns that into
+analytics. Both run from the same repo.
+
+```mermaid
+flowchart LR
+    subgraph ingest["Ingestion"]
+        A["21 job feeds<br/>1,000+ ATS boards"] --> B["Scrapers<br/>Selenium · REST"]
+        B --> C["Validation<br/>dedup · enrichment"]
+        C --> D[("analytics.db")]
+        C --> E["Google Sheets<br/>tracked rows"]
+    end
+
+    subgraph lake["Medallion layers · PySpark"]
+        D --> F["Bronze<br/>raw, nothing dropped<br/>part. source/week"]
+        F --> G["Silver<br/>validated · deduped<br/>part. source/week"]
+        F --> H["Quarantine<br/>part. by reason"]
+        G --> I["Gold<br/>company × track<br/>part. by track"]
+    end
+
+    subgraph marts["Warehouse · dbt on DuckDB"]
+        G --> J["stg_jobs"]
+        H --> K["stg_quarantine"]
+        J --> L["dim_company"]
+        J --> M["fct_weekly_ingest<br/>incremental"]
+        K --> N["fct_rejection_funnel"]
+        J --> O["fct_source_quality"]
+        K --> O
+    end
+
+    subgraph orch["Orchestration · Airflow"]
+        P["extract"] --> Q["bronze"] --> R["silver"]
+        R --> S{"quality gate"}
+        S -->|pass| T["gold"] --> U["dbt build"] --> V["dbt test"]
+        S -->|fail| W["halt, do not publish"]
+    end
 ```
 
-## Google Sheets Structure
+### Layers
 
-### Valid Entries
+**Bronze** is the raw extract with partition columns added and nothing removed.
+Partitioned by `source` and ISO `week`: source is the natural filter for
+per-feed quality analysis, week bounds the reprocessing window for backfills.
+Both prune on scan.
 
-Validated internship postings with status tracking: Sr. No., Status, Company, Title, Date Applied, Job URL, Job ID, Job Type, Location, Resume, Remote?, Entry Date, Source, Sponsorship, and Notes.
+**Silver** holds validated, deduplicated rows. The dedup grain is
+company + title + source, keyed on a normalized company name so `Rivian` and
+`Rivian Technologies` collapse to one row rather than two.
 
-### Outreach Tracker
+**Quarantine** is a sibling of Silver, partitioned by the rule that rejected
+each row. Nothing is deleted at the Silver gate — a bad filter stays
+recoverable, and the rejection rate is queryable instead of inferred. Of
+16,206 rows, 6,177 currently quarantine: 3,919 malformed URLs, 1,363 duplicate
+grains, 739 search-fallback URLs, 156 missing or placeholder companies.
 
-Email outreach tracking synchronized with Valid Entries: Sr. No., Company, Job Title, Job ID, HM Name, HM LinkedIn URL, HM Email, HM LinkedIn Msg, Recruiter Name, Recruiter LinkedIn URL, Recruiter Email, Rec LinkedIn Msg, Send At, Sent Date, and Notes. LinkedIn URL columns are preserved as read-only — automation never overwrites manually entered profile links.
+**Gold** aggregates at company × resume-track grain with valid-rate,
+source-coverage, and sponsorship rollups across 3,531 companies.
 
-### Discarded Entries
+### Schemas are declared, not inferred
 
-Rejected postings with the specific discard reason (Non-USA location, Non-tech role, Blacklisted company, Undergraduate only, PhD only, Security clearance required, Wrong season, Expired posting, etc.), preserving full metadata for review.
+Spark infers column types from the data and fails outright when a column is
+null in every row — which is the case for `page_age_days`, `entry_date`, and
+`processing_time_ms`. Declaring the schema removes the guess and pins types so
+a column cannot silently change type between runs when the data shifts.
 
-### Outreach Notes Column
+### dbt marts
 
-The Notes column automatically tracks email delivery status:
+Six models across staging and marts with 35 tests: uniqueness, nullability,
+accepted values, numeric ranges, and a composite-key check on the incremental
+model's grain.
 
-| Status              | Example Notes                                            |
-| ------------------- | -------------------------------------------------------- |
-| Delivered to one    | Delivered to HM                                          |
-| Delivered to both   | Delivered to HM and Rec                                  |
-| One bounced         | HM email bounced on Mar 01, 2026                         |
-| Both bounced        | HM and Rec emails bounced on Mar 01, 2026                |
-| Bounced and retried | HM email bounced on Mar 01, 2026 · Retried: flast@co.com |
-| Partial delivery    | HM email bounced on Mar 01, 2026 · Delivered to Rec      |
+`fct_weekly_ingest` materializes incrementally with `delete+insert` over a
+lookback window, so late-arriving rows inside the window reconcile rather than
+appending duplicates. Full history rebuilds on `--full-refresh`.
 
-## Results
+The range tests earned their place immediately: a `valid_rate` macro
+interpolated its denominator without parentheses, so
+`cast(a as double) / a + b` evaluated as `(a/a) + b`. A company with 3 valid
+and 7 discarded postings scored 8.0 instead of 0.3, and any company with zero
+valid postings produced NaN. 1,961 of 3,331 aggregate rows were wrong, and the
+accepted-range test caught all of them.
 
-**Daily aggregation:** Processes 500+ postings, produces ~70 valid, ~50 discarded, and ~200 duplicates caught in 10 minutes.
+### Orchestration
 
-**Email discovery:** 25+ emails extracted per run across 15 companies. The 8-layer system resolves previously-impossible companies (T-Mobile, Skyryse, Cleveland Clinic).
+The Airflow DAG chains extract → bronze → silver → gold → dbt build → dbt test,
+with:
 
-**Cumulative:** 450+ tracked entries, 100+ outreach emails sent, zero duplicate applications across 7 months of operation.
+- **A quality gate** that halts the run when the Silver pass rate drops below
+  threshold. The threshold is set from observed weekly distributions, not a
+  target: lifetime pass rate is 62%, but per week it ranges 27–50%, so a
+  threshold picked from the lifetime figure would fail healthy runs and get
+  disabled within a week.
+- **Row-count assertions via XCom** — `bronze` compares its output against
+  what `extract` reported, so rows lost in landing fail loudly rather than
+  shrinking the dataset quietly.
+- **Skip versus fail, distinguished.** A week with no new rows skips. An empty
+  fact table fails. Most DAGs conflate the two.
+- **`max_active_runs=1`**, because the layers write to shared Parquet paths and
+  concurrent runs would interleave partition overwrites. Serialising is cheaper
+  than a distributed lock.
+- **Exponential backoff**, because the extract touches SQLite and dbt touches
+  DuckDB; both lose locks transiently and an immediate retry hits the same
+  contention.
 
-## Quick Start
+### Commands
 
-### Prerequisites
+```bash
+# medallion layers
+python3 -m data_platform.medallion                  # full run
+python3 -m data_platform.medallion --dry-run        # sizes only, no Spark
+python3 -m data_platform.medallion --week 2026-W38  # backfill one week
+
+# warehouse
+cd data_platform/dbt && dbt build                   # models then tests
+dbt docs generate && dbt docs serve                 # lineage graph
+
+# orchestration
+airflow dags test medallion_pipeline 2026-09-15
+```
+
+---
+
+## Data sources
+
+| Source | Boards / feeds | Job IDs | Posting dates |
+|---|---:|---:|---|
+| Greenhouse | 419 | 97% | `updated_at` |
+| Ashby | 225 | 97% | `publishedAt` |
+| Workday tenants | 227 | high | `postedOn` (bucketed) |
+| Lever | 111 | high | `createdAt` (epoch ms) |
+| SmartRecruiters | 67 | high | `releasedDate` |
+| Workable | 26 | high | `published_on` |
+| Rippling | 12 | — | none — dropped by the age gate |
+| GitHub feeds | 12 | 32–71% | age column, `0d`–`52m`–`Aug 21` |
+| Indeed | 6 queries | — | `date_posted`, 100% coverage |
+| The Muse (TypeScript service) | public API, 2 categories, 2 levels | 100% | `publication_date` |
+| Remotive (TypeScript service) | public API, 2 categories | 100% | `publication_date` |
+
+ATS board counts grow on their own. `ats_discovery` inspects every URL the
+pipeline has processed, identifies boards it has not seen, probes their API, and
+appends the working ones to `brain.json`. The hardcoded starting set was 263
+companies; discovery has taken it past 1,000 without manual curation.
+
+---
+
+## Dashboard
+
+**Live:** https://prasad0411.github.io/job-market-intelligence/ (a public snapshot of the real pipeline, republished daily)
+
+A React 19 and strict TypeScript app (`dashboard-web/`) over a read only FastAPI service (`dashboard_api/`).
+
+![Dashboard overview](docs/screenshots/dashboard-overview.png)
+
+| View | What it shows |
+|---|---|
+| Overview | Postings evaluated, noise filtered automatically, valid postings, sponsorship share, companies and median run time; where every posting went, by the first gate that stopped it; weekly ingest |
+| Market | Companies with open roles and how many sponsor H-1B, who is hiring most, top sponsors, role type, career track, top states and remote share, all computed from the same valid postings so the numbers agree |
+| Postings | Search plus source, type, sponsorship and remote filters with paging. Run locally, it adds keyboard review sessions (J and K move, S shortlists, X skips) that time every decision against a spreadsheet baseline |
+| Sources | Accepted versus quarantined rows and yield per source, from `fct_source_quality` |
+| Companies | Hiring activity and sponsorship share, from `dim_company` |
+
+![Market](docs/screenshots/dashboard-market.png)
+
+![Postings](docs/screenshots/dashboard-postings.png)
+
+**Engineering.** Reusable building blocks (a generic sortable `DataTable`, `StatCard`, `Panel`, column and bar charts), app state in a Redux Toolkit store (slices for filters and review sessions, typed hooks, memoised selectors with `createSelector`), with the reducer rules kept as pure, unit tested functions, and layouts that hold down to phone width. Every connection is read only: SQLite opens with `mode=ro` and DuckDB with `read_only=True`, and personal application outcomes are never queried. Charts read the dbt marts because they are tested; the postings list normalises values that historically arrived in shifted columns instead of dropping those rows. Vitest and React Testing Library cover the reducers, query building and full user flows; the API has its own pytest suite, and both run in CI.
+
+```bash
+./venv/bin/python -m uvicorn dashboard_api.app:app --port 8001   # API
+cd dashboard-web && npm ci && npm run dev                         # http://localhost:5174
+```
+
+## Secrets and BigQuery
+
+The service account key that reads the Google Sheet lives in **GCP Secret Manager**, not in the repo or a file the job depends on. The nightly publish reads it at runtime with Application Default Credentials and least privilege access, falling back to the local key only if Secret Manager is unreachable (`dashboard_api/gcp_secrets.py`).
+
+Every nightly snapshot is also loaded into **BigQuery** (dataset `jmi`). The Sheet only holds what is in the tracker today, because expired postings are moved out; BigQuery keeps the history. `postings_history` stores one row per posting per night, partitioned by snapshot date and clustered by company, which answers questions the Sheet cannot, such as how many days a posting stays open and whether sponsorship is rising over time. Rerunning a night replaces only that night's rows, so loads are idempotent, and a BigQuery failure never blocks the public site (`dashboard_api/bq_load.py`).
+
+Each dashboard view renders inside a React error boundary, so a failure in one view shows a short message with a retry button instead of a blank page, and switching tabs resets it.
+
+**Run the full stack with Docker** (the React app behind nginx, plus the read only API over your local pipeline data):
+
+```bash
+docker compose -f docker-compose.dashboard.yml up --build    # http://localhost:8095
+```
+
+Both images run as non root users with health checks. CI builds them, starts the stack, smoke tests the app and the API through nginx, and pushes the images to GitHub Container Registry.
+
+## Impact, and how it is measured
+
+| Claim | How it is measured |
+|---|---|
+| **94% of postings filtered automatically** | Measured. Of 211,130 postings evaluated over 686 runs, 94% were removed before review: duplicates, ineligible roles, wrong seasons or locations. Every removal is logged with its reason. |
+| **About 90% less manual research** | Derived from measured inputs. Discovery is fully automatic (29 sources, three runs a day), and screening effort scales with the postings a person must look at, which fell to about 6%. 90% is a conservative rounding. |
+| **About 70% less review time per posting** | Estimated with the Keystroke Level Model (Card, Moran and Newell): standard times of 1.35 s to decide, 1.1 s to point, 0.2 s per keystroke. In the raw spreadsheet a decision means reading, scrolling across columns, reading again, scrolling back and typing a status: about 9.4 s. In the dashboard every field fits in one row and a decision is a single keystroke: about 2.9 s, a 69% reduction. The dashboard's review timer records seconds per decision, so real sessions can confirm it. |
+
+## TypeScript ingestion
+
+`ingest-ts/` is a Node and strict TypeScript service that pulls entry level and internship roles from The Muse and remote software and data roles from Remotive. Requests retry with exponential backoff on 429 and 5xx responses, each source fails independently, and records are deduplicated by URL before being written as JSON lines.
+
+`aggregator/ts_sources.py` runs the service inside every aggregator run and validates each record. A missing Node binary, a missing build, a timeout or a malformed line costs only those records, never the run, and Node is located even under launchd's minimal `PATH`. From there the records pass through the same title gate, US location filter, dedup tiers and page reader as Greenhouse, Lever or Ashby, and `health_heartbeat` watches both sources.
+
+```bash
+cd ingest-ts && npm ci && npm test && npm run build
+node dist/index.js | head        # one JSON record per line; summary on stderr
+```
+
+## Engineering decisions
+
+### Dedup is tiered, and the strongest signal wins
+
+Four independent identity signals, evaluated in order of confidence. A verdict
+from a stronger tier ends the check — a weaker signal is never allowed to
+override it.
+
+| Tier | Signal | Confidence |
+|---|---|---|
+| 1 | Normalised `job_id` against a 2,288-entry registry | certain |
+| 2 | Canonical URL — **only when the URL identifies one posting** | certain |
+| 3 | Company + title, with legal-suffix normalisation | high |
+| 4 | TF-IDF cosine ≥ 0.90, guarded by a discriminator | low |
+
+The parenthetical in tier 2 is load-bearing. URL canonicalisation strips query
+strings, which means every Google-search fallback URL collapses to the same
+string — 306 rows in the live sheet shared one key. Deduplicating on that would
+have silently dropped the next fallback job of *any* company as a duplicate of an
+unrelated one. `is_identifying_url()` excludes search pages, listing pages and
+bare domains from tier 2 entirely; those fall through to tier 3.
+
+Tier 4 needed a similar guard. TF-IDF scores whole titles, so the single token
+carrying the meaning gets averaged away: `Software Engineer II` scored **1.00**
+against `Software Engineer I`, and `DeFi Algorithmic Trader` scored **0.99**
+against `Algorithmic Trader`. Both were being discarded. The guard is word-set
+based rather than positional — two titles differ when one carries a meaningful
+word the other lacks, or when level markers disagree. Reordering is not a
+difference, so `Single-Family SW Dev Intern` still merges with
+`SW Dev Intern - Single-Family`.
+
+### Check-and-claim is atomic
+
+The post-fetch duplicate check originally skipped the in-progress set on the
+assumption that the caller had already claimed the URL. It had not. `existing_urls`
+is a snapshot taken at startup, so when six worker threads processed the same
+posting concurrently, none of them appeared in it and **all six wrote**. Seven
+identical rows from one source reached the sheet in a single run.
+
+Check and claim now happen inside the same lock. Verified under load: seven
+concurrent threads on one URL produce exactly one write.
+
+### Filters fail open
+
+Every filter is written so that an unexpected input is *kept*, not dropped.
+A false positive costs one glance; a false negative costs an application you
+never knew existed.
+
+The Summer-2027 term filter is the clearest example:
+
+1. Full-time roles never enter the filter at all
+2. Any Fall / Spring / Winter / co-op signal means keep, immediately
+3. Only an unambiguous phrase (`Summer 2027`, `2027 Summer`) triggers a drop —
+   never a bare year, never a bare "Summer"
+4. Ambiguous input is kept; silence is not evidence
+5. An exception inside the filter keeps the job
+
+Verified against live data: 637 full-time rows, zero dropped.
+
+### Sponsorship comes from primary sources
+
+The Sponsorship column is populated from the **USCIS H-1B Employer Data Hub** —
+121,935 employers, fiscal years 2022–2026, approvals summed across every filing
+entity and worksite.
+
+USCIS rather than DOL because DOL's disclosure files record who *filed* an LCA,
+while USCIS records who was *approved* — a stronger signal, in a file two orders
+of magnitude smaller. Third-party aggregators were rejected: they are mirrors of
+these same two datasets with a UI on top, and add a scraping dependency without
+adding accuracy.
+
+Name matching is deliberately conservative. Word-boundary comparison rather than
+character prefixes, because `Advanced Space` matched `ADVANCED TECHNOLOGY
+LABORATORIES` under prefix matching — a false "Yes" is worse than no answer. The
+lookup never returns `No`; absence from the file means small or new, not
+unwilling.
+
+### Provenance ranking
+
+Where two sources disagree about the same job, the more authoritative one wins:
+an ATS API response beats a scraped page, which beats a feed's markdown cell,
+which beats anything derived from a URL slug. This is why direct-ATS rows carry
+clean company names while feed-derived rows historically did not.
+
+---
+
+## Self-maintenance
+
+### Preflight — verifying the verifiers
+
+Nineteen checks run at the start of every aggregator run, inside the one process
+that provably executes. They verify *connections*, not logic:
+
+| Check | Catches |
+|---|---|
+| Control characters | `\b` saved as `\x08`, `\1` as `\x01` — invisible in an editor, fatal at runtime |
+| Scheduler dispatch | A declared job type with no branch in the loop, so those jobs never run |
+| Learning loop | Writer, store and reader disagreeing on a path or a key name |
+| Sources processed | A feed that is fetched every run and then silently discarded |
+| Cross-module calls | A method called on another module that does not exist there |
+| Age parser | Round-trips every date format the sources actually emit |
+| ATS posting dates | Hardcoded ages, and loop-variable mismatches that `NameError` per job |
+| Config parses | `config.py` is rewritten at runtime by the auto-blacklist |
+| Shell functions | A `.sh` calling a function it never defines |
+| Orphaned modules | Code unreachable from any entry point — graph-based, so mutually-importing dead clusters cannot hide |
+| Shadowed constants | A local copy of a config constant silently overriding it |
+| Duplicate definitions | The same function defined twice, second silently winning |
+
+The last three exist because each caught a real, live bug. The orphan check is
+graph-based specifically because a naive per-file version missed an eleven-file
+dead package — those files imported each other, so every one of them looked
+referenced.
+
+Preflight never blocks a run. It reports loudly and continues.
+
+### Learning loop
+
+```
+quality_gate  →  brain.json  →  apply_learned
+   audits          stores          applies upstream
+```
+
+`quality_gate` runs after every write, auditing what actually landed in the
+sheet: URL–company mismatches, non-tech titles, clearance companies, duplicate
+job IDs, shifted rows. Corrections are stored in `brain.json` and applied by
+`apply_learned` on the *next* run — so each mistake moves from being corrected
+after the fact to being prevented before the write.
+
+### Resilience
+
+- **Write-ahead log** — sheet writes are journaled and replayed after a crash
+- **Circuit breaker** — opens after 5 consecutive Sheets failures, half-opens
+  after 60s, closes after 2 successes; prevents hammering a rate-limited API
+- **Atomic JSON** — 16 state files write to a temp file and `os.replace()`;
+  the previous truncate-then-write pattern corrupted the correction log
+- **HTTP cache** — 6-hour TTL, persisted between runs so the 15:00 and 21:00
+  runs reuse pages fetched at 08:00
+- **Snapshots + caps** — every destructive sheet operation takes a CSV snapshot
+  first and aborts if it would delete more than 5% of rows
+
+---
+
+## Failure modes
+
+Documented deliberately, because the interesting question about a pipeline is
+not what it does when everything works.
+
+| Failure | Behaviour |
+|---|---|
+| A source goes down | Other sources continue; `health_heartbeat` alerts when any of 24 sources drops below its rolling baseline |
+| Google Sheets rate-limits | Circuit breaker opens, writes are skipped and retried next run rather than lost |
+| Process crashes mid-write | WAL replays the incomplete transaction on next start |
+| A job page has no date anywhere | Logged as `NO DATE` and kept — the fallthrough list contained Microsoft, Oracle and LinkedIn, so dropping was the wrong default |
+| A filter raises an exception | The job is kept, never dropped |
+| A company name is 90 characters | Rejected as a shifted row — caps are set from the observed distribution (company p99 = 36, title p99 = 71), not round numbers |
+| Two threads race on one job | Atomic check-and-claim; one write |
+| The registry grows unbounded | Pruned above 5,000 entries, saves throttled to once a minute |
+
+---
+
+## Running it
+
+### Requirements
 
 - Python 3.10+
-- Google Sheets API credentials (service account)
-- Gmail API credentials (OAuth)
-- Docker (optional, for Reacher SMTP verification)
-- ChromeDriver (for Selenium-based page fetching)
+- Google Cloud service account with Sheets API access
+- Microsoft Graph credentials (outreach only)
 
-### Installation
+### Setup
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements-local.txt
-
-# Optional: Reacher for SMTP verification
-docker compose up -d
+git clone https://github.com/prasad0411/job-market-intelligence.git
+cd job-market-intelligence
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### Running
+Place the Google service account JSON at `.local/credentials.json`.
+Everything under `.local/` is gitignored — credentials, caches and learned state
+never leave the machine.
+
+### Commands
 
 ```bash
-# Aggregate new jobs
-python3 -m aggregator
-
-# Find emails and create outreach drafts
-python3 -m outreach
-
-# Move reviewed jobs
-python3 scripts/cleanup_not_applied.py
+python3 -m aggregator.run_aggregator     # full pipeline
+python3 -m aggregator.preflight          # wiring check, standalone
+python3 -m pytest tests/                 # 294 tests
+python3 scripts/status.py                # current state
 ```
 
-### Configuration
+### Schedule
 
-1. Place Google Sheets service account JSON in `.local/credentials.json`
-2. Place Gmail OAuth client JSON in `.local/gmail_credentials.json`
-3. Create `.env` with API keys: `HUNTER_API_KEY`
-4. Edit `outreach/outreach_config.py` for sender name and email templates
-5. Add domain overrides in `.local/domain_overrides.json` for companies with wrong Clearbit results
-6. Place resumes as `.local/Prasad Kanade SWE Resume.pdf` and `.local/Prasad Kanade ML Resume.pdf`
+Thirteen jobs under `launchd`. The aggregator runs at 08:00, 15:00 and 21:00;
+`quality_gate` and `health_heartbeat` fire after each successful write.
 
-## Contact
+```bash
+launchctl kickstart -k gui/$(id -u)/com.prasad.jobtracker.scheduler
+```
 
-**Prasad Chandrashekhar Kanade** · MS Computer Science | Northeastern University | May 2027
+### Refreshing sponsorship data
 
-[Email](mailto:kanade.pra@northeastern.edu) · [LinkedIn](https://www.linkedin.com/in/prasad-kanade-/) · [GitHub](https://github.com/prasad0411)
+USCIS stopped publishing direct fiscal-year CSVs after FY2023. Current data comes
+from the Tableau export on the H-1B Employer Data Hub — download as CSV, drop it
+in `.local/h1b/`, and delete `.local/h1b_sponsors.json` to force a rebuild. The
+loader handles the export's UTF-16 encoding, tab separation, and six-column
+approval split. Quarterly is enough; sponsorship is a stable company property.
+
+---
+
+## Project layout
+
+```
+aggregator/
+  run_aggregator.py     orchestration, filter gates, dedup
+  direct_sources.py     7 ATS platform scrapers
+  extractors.py         feed parsing, HTTP cache
+  processors.py         title/location/validation helpers
+  preflight.py          19 wiring checks
+  h1b_data.py           USCIS sponsorship lookup
+  term_filter.py        Summer-2027 filter, fail-open
+  job_age.py            ATS date extraction
+  atomic_json.py        crash-safe state writes
+  url_validator.py      integrity checks before write
+  sheets_manager.py     Sheets API, circuit breaker
+  wal.py                write-ahead log
+  config.py             feed URLs, curated name/slug maps
+
+scripts/
+  scheduler.py          launchd daemon, 13 jobs
+  quality_gate.py       post-write audit → brain.json
+  ats_discovery.py      finds new ATS boards nightly
+  health_heartbeat.py   24-source monitoring
+
+dashboard_api/          read only FastAPI behind the dashboard
+dashboard-web/          React + TypeScript dashboard
+ingest-ts/              TypeScript ingestion service (The Muse, Remotive)
+analytics/              ETL, anomaly detection, title similarity
+outreach/               email discovery, verification, sending
+tests/                  294 tests, 29 of them wiring-specific
+```
+
+---
+
+## Testing philosophy
+
+294 tests, but the count is not the point. The suite previously passed at 265
+tests while a date filter was accepting months-old postings — because those tests
+asserted that code *existed* rather than that it *worked*.
+
+Three rules now:
+
+**A test that cannot fail is not a test.** Assertions like
+`assert isinstance(result, str)` and `assert dec == "REJECT" or dec is None` were
+removed or rewritten to assert one expected outcome.
+
+**Test behaviour, not source text.** Regression checks that grepped for a string
+in a source file passed happily while the code containing that string never ran.
+
+**Every bug gets a test named after what it broke.** `tests/test_wiring.py`
+carries 29 of these — the age parser against every real format, blank-cell
+column shifts, hardcoded ATS ages, the learning-loop round trip, full-time roles
+surviving the internship gate, fuzzy dedup preserving specialisations, and
+preflight itself being demonstrably capable of detecting an injected bug.
+
+---
+
+## Scale
+
+| | |
+|---|---:|
+| Python | 116 files · 46,168 lines |
+| Sources | 29, including 7 ATS platforms covering 1,000+ boards, Indeed, GitHub lists and the USCIS H-1B data hub |
+| Jobs evaluated | 211,130 across 686 runs |
+| Sponsorship dataset | 121,935 employers, FY2022–2026 |
+| Job ID registry | 2,288 |
+| Scheduled jobs | 13 |
+| Preflight checks | 19 |
+| Tests | 323: 294 Python, 20 dashboard, 9 TypeScript ingestion |
+
+---
+
+## Author
+
+**Prasad Kanade** — MS Computer Science, Northeastern University
+
+[GitHub](https://github.com/prasad0411) ·
+[LinkedIn](https://linkedin.com/in/prasad-kanade-/) ·
+[Portfolio](https://prasad0411.github.io/Prasad-Portfolio/) ·
+kanade.pra@northeastern.edu

@@ -3,3 +3,4 @@ plotly
 pandas
 gspread
 oauth2client
+python-jobspy

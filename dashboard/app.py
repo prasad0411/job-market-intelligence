@@ -797,10 +797,6 @@ def main():
 
         def norm_remote(r):
             if not r or not isinstance(r, str):
-                city_to_state = {"san francisco":"CA","san jose":"CA","sunnyvale":"CA","palo alto":"CA","mountain view":"CA","menlo park":"CA","cupertino":"CA","santa clara":"CA","san mateo":"CA","redwood city":"CA","foster city":"CA","san carlos":"CA","milpitas":"CA","fremont":"CA","los angeles":"CA","san diego":"CA","irvine":"CA","santa monica":"CA","new york city":"NY","new york":"NY","nyc":"NY","brooklyn":"NY","jersey city":"NJ","boston":"MA","cambridge":"MA","framingham":"MA","chicago":"IL","austin":"TX","dallas":"TX","houston":"TX","san antonio":"TX","seattle":"WA","redmond":"WA","bellevue":"WA","atlanta":"GA","denver":"CO","boulder":"CO","golden":"CO","portland":"OR","pittsburgh":"PA","philadelphia":"PA","radnor":"PA","phoenix":"AZ","scottsdale":"AZ","ann arbor":"MI","detroit":"MI","minneapolis":"MN","orlando":"FL","miami":"FL","tampa":"FL","nashville":"TN","salt lake city":"UT","raleigh":"NC","charlotte":"NC","durham":"NC","richmond":"VA","mclean":"VA","arlington":"VA","silver spring":"MD","bethesda":"MD","columbus":"OH","cincinnati":"OH","cleveland":"OH","indianapolis":"IN","milwaukee":"WI","madison":"WI","st louis":"MO","kansas city":"MO","bentonville":"AR","sarasota":"FL","irving":"TX","hillsboro":"OR","tucson":"AZ","chaska":"MN","gresham":"OR","shakopee":"MN","west valley city":"UT","sf":"CA","cali":"CA","ny":"NY","nyc":"NY","tx":"TX","ma":"MA","il":"IL","wa":"WA","co":"CO","ga":"GA","fl":"FL","nc":"NC","nj":"NJ","oh":"OH","pa":"PA","va":"VA","ct":"CT","mn":"MN","mi":"MI","or":"OR","md":"MD","az":"AZ","wi":"WI","in":"IN","tn":"TN","mo":"MO","ut":"UT","ia":"IA","ne":"NE","ky":"KY","ri":"RI","sc":"SC","ok":"OK","plano":"TX","irving":"TX","richardson":"TX","allen":"TX","quincy":"MA","waltham":"MA","chelmsford":"MA","beverly":"MA","emeryville":"CA","costa mesa":"CA","glendale":"CA","newark":"CA","torrance":"CA","san ramon":"CA","los gatos":"CA","tustin":"CA","long beach":"CA","mclean":"VA","falls church":"VA","herndon":"VA","jersey city":"NJ","bridgewater":"NJ","bohemia":"NY","buffalo":"NY","kennesaw":"GA","peachtree corners":"GA","duluth":"GA","savannah":"GA","draper":"UT","lindon":"UT","boca raton":"FL","deerfield beach":"FL","jacksonville":"FL","greenwich":"CT","windsor":"CT","bristol":"CT","spring":"TX","kingwood":"TX","auburn hills":"MI","zeeland":"MI","farmington hills":"MI","okemos":"MI","neenah":"WI","kalamazoo":"MI","littleton":"CO","englewood":"CO","sioux center":"IA","ankeny":"IA","beavercreek":"OH","hickory":"NC","cary":"NC","lexington":"KY","lincoln":"NE","omaha":"NE","carmel":"IN","bloomington":"IN","thief river falls":"MN","longmont":"CO"}
-                for city, st in city_to_state.items():
-                    if city in ll:
-                        return st
                 return "Unknown"
             rl = r.strip().lower()
             if "remote" in rl:
@@ -842,5 +838,195 @@ def main():
             st.plotly_chart(fig_r, use_container_width=True)
 
 
+
+
+def brain_tab():
+    """Pipeline Intelligence tab — shows everything Brain has learned."""
+    import json, os, datetime
+    st.markdown('<div class="section-title">🧠 Pipeline Intelligence</div>', unsafe_allow_html=True)
+
+    brain_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".local", "brain.json")
+    if not os.path.exists(brain_path):
+        st.warning("Brain not initialized yet. Run the outreach pipeline first.")
+        return
+
+    try:
+        with open(brain_path) as f:
+            b = json.load(f)
+    except Exception as e:
+        st.error(f"Failed to load Brain: {e}")
+        return
+
+    # ── Top metrics ─────────────────────────────────────────────────────────
+    patterns = b.get("patterns", {})
+    total_att = patterns.get("total_attempts", 0)
+    total_suc = patterns.get("total_successes", 0)
+    domains = b.get("domains", {})
+    companies = b.get("companies", {})
+    mx_cache = b.get("mx_cache", {})
+    linkedin_names = b.get("linkedin_names", {})
+    job_ids = b.get("job_id_registry", {})
+    simplify_q = b.get("simplify_retry_queue", {})
+    cb = b.get("circuit_breaker", {})
+    rh = b.get("run_history", {})
+
+    acc = round(total_suc / total_att * 100, 1) if total_att else 0
+
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    with m1:
+        st.markdown(card("Domains Learned", len(domains), "v-blue"), unsafe_allow_html=True)
+    with m2:
+        st.markdown(card("Pattern Accuracy", f"{acc}%", "v-green" if acc >= 80 else "v-amber"), unsafe_allow_html=True)
+    with m3:
+        st.markdown(card("MX Records Cached", len(mx_cache), "v-cyan"), unsafe_allow_html=True)
+    with m4:
+        st.markdown(card("Job IDs Registered", len(job_ids), "v-purple"), unsafe_allow_html=True)
+    with m5:
+        st.markdown(card("LinkedIn Names", len(linkedin_names), "v-orange"), unsafe_allow_html=True)
+    with m6:
+        st.markdown(card("Companies Tracked", len(companies), "v-white"), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+
+    # ── Pattern success rates ────────────────────────────────────────────────
+    with col1:
+        st.markdown('<div class="section-title" style="font-size:18px;margin-top:10px;">Email Pattern Rankings</div>', unsafe_allow_html=True)
+        gr = patterns.get("global_success_rates", {})
+        if gr:
+            import plotly.graph_objects as go
+            sorted_pats = sorted(gr.items(), key=lambda x: x[1], reverse=True)
+            pats = [p[0] for p in sorted_pats]
+            rates = [round(p[1] * 100, 1) for p in sorted_pats]
+            colors = ["#4ade80" if r >= 50 else "#fbbf24" if r >= 20 else "#f87171" for r in rates]
+            fig = go.Figure(go.Bar(
+                x=rates, y=pats, orientation="h",
+                marker_color=colors,
+                text=[f"{r}%" for r in rates],
+                textposition="outside",
+            ))
+            fig.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#7a8290", size=12),
+                xaxis=dict(gridcolor="#1c2230", title="Success Rate %"),
+                yaxis=dict(gridcolor="#1c2230"),
+                margin=dict(t=10, b=20, l=20, r=60), height=300,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No pattern data yet — run outreach pipeline")
+
+    # ── Source quality ────────────────────────────────────────────────────────
+    with col2:
+        st.markdown('<div class="section-title" style="font-size:18px;margin-top:10px;">Source Quality</div>', unsafe_allow_html=True)
+        sq = b.get("aggregator", {}).get("source_quality", {})
+        if sq:
+            import plotly.express as px
+            sq_data = [{"Source": k, "Quality %": round(v.get("quality_rate", 0) * 100, 1),
+                       "Valid": v.get("valid", 0), "Fetched": v.get("fetched", 0)}
+                      for k, v in sq.items()]
+            sq_data.sort(key=lambda x: -x["Quality %"])
+            fig2 = px.bar(sq_data, x="Source", y="Quality %",
+                         color="Quality %", color_continuous_scale=["#f87171", "#fbbf24", "#4ade80"],
+                         text="Quality %")
+            fig2.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+            fig2.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#7a8290"), xaxis=dict(gridcolor="#1c2230"),
+                yaxis=dict(gridcolor="#1c2230", range=[0, 35]),
+                coloraxis_showscale=False, margin=dict(t=10, b=20), height=300,
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("No source data yet — run aggregator")
+
+    # ── API ROI ──────────────────────────────────────────────────────────────
+    st.markdown('<div class="section-title" style="font-size:18px;margin-top:20px;">API Performance</div>', unsafe_allow_html=True)
+    apis = b.get("apis", {})
+    if apis:
+        api_cols = st.columns(len(apis))
+        for idx, (name, data) in enumerate(apis.items()):
+            with api_cols[idx]:
+                used = data.get("credits_used_this_month", 0)
+                limit = data.get("lim", data.get("credits_limit", 0))
+                vpc = data.get("value_per_credit", 0.0)
+                pct = round(used / limit * 100) if limit else 0
+                color = "v-red" if pct > 80 else "v-amber" if pct > 50 else "v-green"
+                st.markdown(card(
+                    name.upper(),
+                    f"{used}/{limit}",
+                    color,
+                    f"ROI: {vpc:.2f} emails/credit"
+                ), unsafe_allow_html=True)
+    else:
+        st.info("No API data yet — APIs not called this month")
+
+    # ── Circuit breaker + Selenium health ────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    h1, h2, h3, h4 = st.columns(4)
+    with h1:
+        cb_ok = not cb.get("tripped", False)
+        st.markdown(card("Circuit Breaker",
+            "OK" if cb_ok else "TRIPPED",
+            "v-green" if cb_ok else "v-red",
+            f"Sent: {cb.get('sent_today',0)} | Bounced: {cb.get('bounced_today',0)}"
+        ), unsafe_allow_html=True)
+    with h2:
+        sel_ok = rh.get("selenium_working", True)
+        st.markdown(card("Selenium",
+            "OK" if sel_ok else "BROKEN",
+            "v-green" if sel_ok else "v-red",
+            rh.get("chromedriver_version", "unknown")[:20]
+        ), unsafe_allow_html=True)
+    with h3:
+        simplify_active = sum(1 for v in simplify_q.values() if not v.get("exhausted"))
+        st.markdown(card("Simplify Queue", simplify_active, "v-amber" if simplify_active > 0 else "v-green",
+            "pending retry" if simplify_active > 0 else "all resolved"
+        ), unsafe_allow_html=True)
+    with h4:
+        domain_corrections = b.get("domain_corrections", {})
+        st.markdown(card("Domain Fixes", len(domain_corrections), "v-cyan",
+            "wrong→right mappings"
+        ), unsafe_allow_html=True)
+
+    # ── Top domains by confidence ─────────────────────────────────────────────
+    if domains:
+        st.markdown('<div class="section-title" style="font-size:18px;margin-top:20px;">Top Learned Domains</div>', unsafe_allow_html=True)
+        top_domains = sorted(
+            [(d, e) for d, e in domains.items() if e.get("email_pattern") and e.get("pattern_confidence", 0) > 0],
+            key=lambda x: -x[1].get("pattern_confidence", 0)
+        )[:20]
+        if top_domains:
+            import pandas as pd
+            df_d = pd.DataFrame([{
+                "Domain": d,
+                "Pattern": e.get("email_pattern", ""),
+                "Confidence": f"{e.get('pattern_confidence', 0):.0%}",
+                "Successes": e.get("pattern_successes", 0),
+                "Provider": e.get("mx_provider", "other") or "other",
+            } for d, e in top_domains])
+            st.dataframe(df_d, use_container_width=True, hide_index=True)
+
+    # ── Companies being tracked ───────────────────────────────────────────────
+    flagged = [(k, e) for k, e in companies.items()
+               if e.get("rejection_count", 0) >= 2 and not e.get("blacklist")]
+    if flagged:
+        st.markdown('<div class="section-title" style="font-size:18px;margin-top:20px;color:#fbbf24;">⚠ Companies to Watch (2+ rejections)</div>', unsafe_allow_html=True)
+        import pandas as pd
+        df_co = pd.DataFrame([{
+            "Company": e.get("name", k),
+            "Rejections": e.get("rejection_count", 0),
+            "Top Reason": max(e.get("rejection_reasons", {"none": 1}), key=e.get("rejection_reasons", {}).get),
+            "Outreached": e.get("outreach_count", 0),
+        } for k, e in sorted(flagged, key=lambda x: -x[1].get("rejection_count", 0))[:15]])
+        st.dataframe(df_co, use_container_width=True, hide_index=True)
+
+
 if __name__ == "__main__":
-    main()
+    tab1, tab2 = st.tabs(["📊 Applications", "🧠 Pipeline Intelligence"])
+    with tab1:
+        main()
+    with tab2:
+        brain_tab()
+

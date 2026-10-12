@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.prasad.jobtracker.cleanup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker/scripts/cron_cleanup.sh</string>
+    </array>
+
+    <!-- Run at 7 AM every day — script internally tracks last run to enforce 2-day gap -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key><integer>7</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker/.local/launchd_cleanup.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker/.local/launchd_cleanup_err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/prasadkanade</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

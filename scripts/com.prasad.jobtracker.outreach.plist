@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.prasad.jobtracker.outreach</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-l</string>
+        <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker/scripts/cron_runner.sh</string>
+        <string>outreach</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>0</integer></dict>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker/.local/launchd_outreach.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/prasadkanade/Documents/Prasad Kanade/Job Hunt Tracker/.local/launchd_outreach_err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/prasadkanade</string>
+        <key>USER</key>
+        <string>prasadkanade</string>
+        <key>SHELL</key>
+        <string>/bin/zsh</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

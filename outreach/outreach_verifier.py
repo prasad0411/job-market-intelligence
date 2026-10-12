@@ -29,6 +29,11 @@ Never send: < 50
 """
 
 import os, json, time, logging, datetime
+from aggregator.atomic_json import write_json as _atomic_write_json
+try:
+    from outreach.brain import Brain as _Brain
+except Exception:
+    _Brain = None
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +42,9 @@ _LOCAL = os.path.join(
 )
 CIRCUIT_BREAKER_FILE = os.path.join(_LOCAL, "circuit_breaker.json")
 DOMAIN_HISTORY_FILE = os.path.join(_LOCAL, "domain_pattern_history.json")
+
+# Module-level cache — loaded once, invalidated on every write
+_DH_CACHE = None
 
 AUTO_SEND_THRESHOLD = 75
 MANUAL_REVIEW_THRESHOLD = 50
@@ -48,74 +56,126 @@ MAX_DAILY_SENDS = 30
 # ============================================================================
 # Gate 1: Suspicious Email Check
 # ============================================================================
+# Country TLDs that are never US company email domains
+_NON_US_TLDS = {
+    ".cn", ".de", ".uk", ".co.uk", ".fr", ".jp", ".in", ".br", ".ru",
+    ".au", ".ca", ".mx", ".es", ".it", ".nl", ".se", ".no", ".dk",
+    ".fi", ".pl", ".cz", ".hu", ".ro", ".il", ".sg", ".hk", ".tw",
+    ".kr", ".co.il", ".co.in", ".co.jp", ".co.kr", ".co.nz", ".co.za",
+    ".com.au", ".com.br", ".com.cn", ".com.mx", ".com.sg", ".com.tw",
+    ".org.uk", ".net.au", ".co.kr", ".co.nz",
+}
+
+# Known wrong-domain patterns: company slug → real domain
+_COMPANY_DOMAIN_CORRECTIONS = {
+    "centerfieldmedia": "centerfieldmedia.com",
+    "centerfieldhits": "centerfieldmedia.com",  # Wrong domain returned by Clearbit
+    "onsemi": "onsemi.com",
+    "onseminar": "onsemi.com",  # Clearbit error
+    "ivo": "ivo.ai",
+    "ivory": "ivo.ai",  # Wrong domain
+    "gen": "gen.com",
+    "gendigital": "gen.com",
+    "solidigm": "solidigm.com",
+    "solidigmtech": "solidigm.com",
+    "guidewire-consulting": "guidewire.com",
+    "vantagewest": None,  # Credit union — different company
+}
+
+
 def is_suspicious_email(email):
-    """Check if email domain is ATS/internal — not a real person's inbox."""
+    """
+    Comprehensive email quality gate.
+    Blocks: ATS domains, role-based, too-short, non-US TLDs,
+            known wrong domains, concatenated names, single-letter locals.
+    """
     if not email or "@" not in email:
         return True
     try:
         from outreach.outreach_config import SUSPICIOUS_EMAIL_DOMAINS
     except ImportError:
-        return False
+        SUSPICIOUS_EMAIL_DOMAINS = []
+
     domain = email.split("@")[1].lower().strip()
     local = email.split("@")[0].lower().strip()
 
     # Check against known ATS domains
     for sus in SUSPICIOUS_EMAIL_DOMAINS:
         if domain.endswith(sus):
-            log.info(f"Suspicious domain blocked: {email} (matches {sus})")
+            log.info(f"ATS domain blocked: {email}")
             return True
 
-    # 3+ subdomains = likely internal routing
-    if domain.count(".") >= 3:
-        log.info(f"Suspicious domain blocked: {email} (too many subdomains)")
+    # 3+ subdomains = likely internal routing (except co.uk etc)
+    parts = domain.split(".")
+    if len(parts) >= 4:
+        log.info(f"Too many subdomains blocked: {email}")
         return True
+
+    # Non-US country TLD check
+    for tld in _NON_US_TLDS:
+        if domain.endswith(tld):
+            log.info(f"Non-US TLD blocked: {email} (ends with {tld})")
+            return True
+
+    # Known wrong domain check
+    base = domain.split(".")[0].lower()
+    if base in _COMPANY_DOMAIN_CORRECTIONS:
+        correct = _COMPANY_DOMAIN_CORRECTIONS[base]
+        if correct is None or correct != domain:
+            log.info(f"Known wrong domain blocked: {email} (base={base})")
+            return True
 
     # Local part sanity checks
     if len(local) < 3 or len(local) > 64:
         return True
-    # Reject very short local parts (initials only like sr@ or s.n@)
+
+    # Clean local: remove separators
     clean_local = local.replace(".", "").replace("_", "").replace("-", "")
+
+    # Too short after cleaning (initials like pt@, sr@, s.n@)
     if len(clean_local) < 3:
-        log.info(f"Too-short local part blocked: {email}")
-        return True
-    if local.replace(".", "").replace("_", "").replace("-", "").isdigit():
+        log.info(f"Too-short local blocked: {email}")
         return True
 
-    # Reject role-based emails (these are shared inboxes, not personal)
+    # All digits
+    if clean_local.isdigit():
+        return True
+
+    # Detect concatenated multi-person emails (donnell.taylormelissapearson@hp.com)
+    # Heuristic: local part > 30 chars with no plausible single-person pattern
+    if len(clean_local) > 30:
+        log.info(f"Likely concatenated name blocked: {email} (local={local})")
+        return True
+
+    # Single-letter last name patterns: pt@, s.t@, j.s@
+    # After removing separators, if length <= 3 it's initials
+    if len(clean_local) <= 3 and not clean_local.isalnum():
+        log.info(f"Initials-only blocked: {email}")
+        return True
+
+    # Check for pattern like "pt" (first initial + last initial) — too ambiguous
+    # Only block if BOTH parts after split are 1-2 chars
+    local_parts = local.replace("_", ".").replace("-", ".").split(".")
+    if len(local_parts) >= 2:
+        if all(len(p) <= 1 for p in local_parts):
+            log.info(f"All-initials email blocked: {email}")
+            return True
+        # Single-char last part only blocks if first part is ALSO short
+        # e.g. j.s@ or p.t@ = initials → block
+        # e.g. sunny.p@ or muskaan.b@ = firstname.initial → allow
+        if len(local_parts[-1]) == 1 and len(local_parts[0]) <= 2:
+            log.info(f"Single-char last part blocked: {email}")
+            return True
+
+    # Role-based emails
     role_prefixes = {
-        "info",
-        "hello",
-        "press",
-        "sales",
-        "support",
-        "contact",
-        "admin",
-        "help",
-        "team",
-        "hr",
-        "jobs",
-        "careers",
-        "office",
-        "marketing",
-        "media",
-        "security",
-        "privacy",
-        "legal",
-        "feedback",
-        "billing",
-        "noreply",
-        "no-reply",
-        "webmaster",
-        "postmaster",
-        "abuse",
-        "hostmaster",
-        "recruiting",
-        "talent",
-        "apply",
-        "hire",
-        "hiring",
-        "resume",
-        "resumes",
+        "info", "hello", "press", "sales", "support", "contact",
+        "admin", "help", "team", "hr", "jobs", "careers", "office",
+        "marketing", "media", "security", "privacy", "legal",
+        "feedback", "billing", "noreply", "no-reply", "webmaster",
+        "postmaster", "abuse", "hostmaster", "recruiting", "talent",
+        "apply", "hire", "hiring", "resume", "resumes",
+        "careers", "jobs", "internships", "university",
     }
     if local in role_prefixes:
         log.info(f"Role-based email blocked: {email}")
@@ -135,8 +195,8 @@ def has_valid_mx(domain):
         try:
             dns.resolver.resolve(domain, "MX", lifetime=10)
             return True
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.has_valid_mx', _swx)
         try:
             dns.resolver.resolve(domain, "A", lifetime=10)
             return True
@@ -166,12 +226,21 @@ class CircuitBreaker:
         try:
             if os.path.exists(CIRCUIT_BREAKER_FILE):
                 data = json.load(open(CIRCUIT_BREAKER_FILE))
-                # Reset if it's a new day
                 if data.get("date") != _today():
-                    return CircuitBreaker._fresh()
+                    data = CircuitBreaker._fresh()
+                    CircuitBreaker.save(data)
+                # Sync Brain circuit_breaker counts from file (file is source of truth for daily)
+                try:
+                    if _Brain:
+                        b = _Brain.get()
+                        b._data["circuit_breaker"]["sent_today"] = data.get("sent", 0)
+                        b._data["circuit_breaker"]["bounced_today"] = data.get("bounced", 0)
+                        b._data["circuit_breaker"]["tripped"] = data.get("tripped", False)
+                except Exception as _swx:
+                    from aggregator.swallowed import swallow as _s; _s('outreach_verifier.load', _swx)
                 return data
-        except Exception:
-            pass
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.load', _swx)
         return CircuitBreaker._fresh()
 
     @staticmethod
@@ -188,7 +257,7 @@ class CircuitBreaker:
     def save(data):
         try:
             os.makedirs(_LOCAL, exist_ok=True)
-            json.dump(data, open(CIRCUIT_BREAKER_FILE, "w"), indent=2)
+            _atomic_write_json(CIRCUIT_BREAKER_FILE, data)
         except Exception as e:
             log.error(f"Circuit breaker save failed: {e}")
 
@@ -264,20 +333,27 @@ class DomainHistory:
 
     @staticmethod
     def load():
+        global _DH_CACHE
+        if _DH_CACHE is not None:
+            return _DH_CACHE
         try:
             if os.path.exists(DOMAIN_HISTORY_FILE):
-                return json.load(open(DOMAIN_HISTORY_FILE))
-        except Exception:
-            pass
-        return {}
+                _DH_CACHE = json.load(open(DOMAIN_HISTORY_FILE))
+                return _DH_CACHE
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.load', _swx)
+        _DH_CACHE = {}
+        return _DH_CACHE
 
     @staticmethod
     def save(data):
+        global _DH_CACHE
+        _DH_CACHE = data  # invalidate in-memory cache with new data
         try:
             os.makedirs(_LOCAL, exist_ok=True)
-            json.dump(data, open(DOMAIN_HISTORY_FILE, "w"), indent=2)
-        except Exception:
-            pass
+            _atomic_write_json(DOMAIN_HISTORY_FILE, data)
+        except Exception as e:
+            log.debug(f"DomainHistory save failed: {e}")
 
     @staticmethod
     def record_success(domain, pattern, email):
@@ -297,9 +373,12 @@ class DomainHistory:
         if pattern in data[domain].get("failed_patterns", []):
             data[domain]["failed_patterns"].remove(pattern)
         DomainHistory.save(data)
-        log.info(
-            f"Domain history: {domain} confirmed pattern '{pattern}' (from {email})"
-        )
+        log.info(f"Domain history: {domain} confirmed pattern '{pattern}' (from {email})")
+        try:
+            if _Brain:
+                _Brain.get().record_pattern_success(domain, pattern, email)
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.record_success', _swx)
 
     @staticmethod
     def record_failure(domain, pattern, email):
@@ -322,33 +401,53 @@ class DomainHistory:
                 f"Domain history: {domain} invalidated pattern '{pattern}' (bounce)"
             )
         DomainHistory.save(data)
+        try:
+            if _Brain:
+                _Brain.get().record_pattern_failure(domain, pattern)
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.record_failure', _swx)
 
     @staticmethod
     def get_confirmed_pattern(domain):
-        """Get the confirmed working pattern for a domain, or None."""
+        """Get the confirmed working pattern for a domain. Brain is source of truth."""
+        domain = domain.lower().strip()
+        # Check Brain first — it has higher confidence and more data
+        try:
+            if _Brain:
+                brain_pat = _Brain.get().best_pattern_for(domain)
+                if brain_pat:
+                    return brain_pat
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.get_confirmed_pattern', _swx)
+        # Fall back to local file cache
         data = DomainHistory.load()
-        entry = data.get(domain.lower().strip(), {})
+        entry = data.get(domain, {})
         pattern = entry.get("confirmed_pattern")
         confirmed_at = entry.get("confirmed_at")
         if pattern and confirmed_at:
-            # Check staleness — invalidate if older than 90 days
             try:
                 confirmed_date = datetime.datetime.strptime(confirmed_at, "%Y-%m-%d")
                 age_days = (datetime.datetime.now() - confirmed_date).days
                 if age_days > 90:
-                    log.info(
-                        f"Domain history: {domain} pattern '{pattern}' is stale ({age_days}d)"
-                    )
+                    log.info(f"Domain history: {domain} pattern stale ({age_days}d)")
                     return None
-            except Exception:
-                pass
+            except Exception as _swx:
+                from aggregator.swallowed import swallow as _s; _s('outreach_verifier.get_confirmed_pattern', _swx)
         return pattern
 
     @staticmethod
     def is_failed_pattern(domain, pattern):
         """Check if this pattern has previously bounced for this domain."""
+        domain = domain.lower().strip()
+        # Check Brain first
+        try:
+            if _Brain:
+                if _Brain.get().is_failed_pattern(domain, pattern):
+                    return True
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.is_failed_pattern', _swx)
         data = DomainHistory.load()
-        entry = data.get(domain.lower().strip(), {})
+        entry = data.get(domain, {})
         return pattern in entry.get("failed_patterns", [])
 
 
@@ -384,7 +483,7 @@ class EmailVerifier:
                 "status": "verified" | "manual_review" | "rejected",
                 "source": str (what verified it),
                 "details": str (human-readable explanation),
-                "send_ok": bool (confidence >= AUTO_SEND_THRESHOLD),
+                "send_ok": bool (confidence >= effective threshold for this domain),
             }
         """
         if not email or "@" not in email:
@@ -394,6 +493,20 @@ class EmailVerifier:
         if domain is None:
             domain = email.split("@")[1]
         domain = domain.lower().strip()
+
+        # ── Domain-specific threshold from Brain (raised on each bounce) ──
+        # Brain.record_bounce raises threshold by +10 per bounce, max 95.
+        # Domains with history of bounces require higher confidence before sending.
+        _effective_threshold = AUTO_SEND_THRESHOLD  # default 75
+        try:
+            if _Brain:
+                _dt = _Brain.get()._data.get("domain_thresholds", {})
+                _domain_thresh = _dt.get(domain)
+                if _domain_thresh and _domain_thresh > AUTO_SEND_THRESHOLD:
+                    _effective_threshold = _domain_thresh
+                    log.debug(f"Domain threshold {domain}: {_effective_threshold} (raised from bounces)")
+        except Exception as _swx:
+            from aggregator.swallowed import swallow as _s; _s('outreach_verifier.verify', _swx)
 
         # ── Gate 1: Suspicious domain check ──
         if is_suspicious_email(email):
@@ -418,23 +531,23 @@ class EmailVerifier:
             provider = self.pv.get_provider(domain)
 
             if provider == "google":
-                result = self.pv._verify_google(email, domain)
-                if result == "exists":
-                    conf = 90 if source_hint != "pattern_guess" else 85
-                    return self._result(
-                        conf,
-                        "verified",
-                        f"google_gxlu",
-                        f"Google Workspace confirmed: {email}",
-                    )
-                elif result == "not_exists":
-                    return self._result(
-                        0,
-                        "rejected",
-                        "google_gxlu",
-                        f"Google Workspace rejected: {email}",
-                    )
-                # "unknown" means catch-all or gxlu failed — fall through
+                # gxlu verification — re-enabled with timeout and fallback
+                try:
+                    result = self.pv._verify_google(email, domain)
+                    if result == "exists":
+                        conf = 90 if source_hint not in ("pattern_guess",) else 85
+                        return self._result(
+                            conf, "verified", "google_gxlu",
+                            f"Google gxlu confirmed: {email}"
+                        )
+                    elif result == "not_exists":
+                        return self._result(
+                            0, "rejected", "google_gxlu",
+                            f"Google gxlu rejected: {email}"
+                        )
+                    # "unknown" → fall through to Reacher
+                except Exception as _gxlu_e:
+                    log.debug(f"gxlu error (falling through): {_gxlu_e}")
 
             elif provider == "microsoft":
                 result = self.pv._verify_microsoft(email)
@@ -486,12 +599,14 @@ class EmailVerifier:
                         "website_mining",
                     ):
                         conf = 80
-                    return self._result(
-                        conf,
-                        "verified",
-                        "reacher_smtp",
-                        f"Reacher SMTP verified: {email}",
-                    )
+                    # Use domain-specific threshold for send_ok decision
+                    return {
+                        "confidence": conf,
+                        "status": "verified",
+                        "source": "reacher_smtp",
+                        "details": f"Reacher SMTP verified: {email}",
+                        "send_ok": conf >= _effective_threshold,
+                    }
 
             elif reacher_result == "risky":
                 return self._result(
@@ -506,12 +621,14 @@ class EmailVerifier:
 
         if source_hint == "api_verified":
             # API (Apollo) confirmed this email — trust it even without provider verification
-            return self._result(
-                85,
-                "verified",
-                "api_verified",
-                f"API-confirmed email, provider ({provider_name}) unverifiable",
-            )
+            # Use domain threshold for send_ok — if domain has bounced before, require higher conf
+            return {
+                "confidence": 85,
+                "status": "verified",
+                "source": "api_verified",
+                "details": f"API-confirmed email, provider ({provider_name}) unverifiable",
+                "send_ok": 85 >= _effective_threshold,
+            }
 
         if source_hint in ("pattern_cache", "website_mining"):
             # Known pattern but can't verify — manual review

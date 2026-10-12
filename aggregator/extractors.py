@@ -9,6 +9,7 @@ import time
 import random
 import re
 import logging
+import threading
 import atexit
 from functools import lru_cache
 from contextlib import contextmanager
@@ -65,10 +66,120 @@ from aggregator.processors import (
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": USER_AGENTS[0]})
-_URL_HEALTH_CACHE = {}
-_HTTP_RESPONSE_CACHE = {}
 _SELENIUM_DRIVER = None
+
+# FIX 3: persist URL health cache to disk with 24-hour TTL
+_URL_HEALTH_CACHE_FILE = os.path.join(".local", "url_health_cache.json")
+_URL_HEALTH_CACHE_TTL = 86400  # 24 hours
+
+def _load_url_health_cache():
+    try:
+        if os.path.exists(_URL_HEALTH_CACHE_FILE):
+            raw = json.load(open(_URL_HEALTH_CACHE_FILE))
+            now = time.time()
+            return {k: v for k, v in raw.items()
+                    if now - v.get("ts", 0) < _URL_HEALTH_CACHE_TTL}
+    except Exception:
+        pass
+    return {}
+
+def _save_url_health_cache(cache):
+    try:
+        os.makedirs(".local", exist_ok=True)
+        if len(cache) > 2000:
+            sorted_items = sorted(cache.items(), key=lambda x: x[1].get("ts", 0))
+            cache = dict(sorted_items[-2000:])
+        # open(path,"w") truncates before dump runs: a crash or a second
+        # writer mid-dump left a half-written file. Same bug the comment
+        # at _save_http_response_cache already documents.
+        from aggregator.atomic_json import write_json as _wj
+        _wj(_URL_HEALTH_CACHE_FILE, cache, indent=None)
+    except Exception as _sw:
+        from aggregator.swallowed import swallow as _s; _s('cache.url_health_write', _sw)
+
+_URL_HEALTH_CACHE = _load_url_health_cache()
 _SELENIUM_LAST_USED = None
+
+# FIX 8: persist HTTP response cache to disk with 6-hour TTL
+_HTTP_CACHE_FILE = os.path.join(".local", "http_response_cache.json")
+_HTTP_CACHE_TTL = 6 * 3600  # 6 hours
+
+def _load_http_cache():
+    """Load HTTP cache — keep all entries, check TTL per-entry at lookup time."""
+    try:
+        if os.path.exists(_HTTP_CACHE_FILE):
+            return json.load(open(_HTTP_CACHE_FILE))
+    except Exception:
+        pass
+    return {}
+
+def _http_cache_get(url):
+    """Get cached response only if not expired. Returns None if missing or stale."""
+    entry = _HTTP_RESPONSE_CACHE.get(url)
+    if not entry:
+        return None
+    if time.time() - entry.get("ts", 0) > _HTTP_CACHE_TTL:
+        del _HTTP_RESPONSE_CACHE[url]
+        return None
+    return entry
+
+def _save_http_cache(cache):
+    try:
+        os.makedirs(".local", exist_ok=True)
+        # Keep max 500 entries — evict oldest
+        if len(cache) > 500:
+            sorted_items = sorted(cache.items(), key=lambda x: x[1].get("ts", 0))
+            cache = dict(sorted_items[-500:])
+        # Only persist what is serializable. The cache holds a live response
+        # object per entry, which json cannot encode - so json.dump raised on
+        # EVERY run. And open(path,"w") truncates before dump runs, so the
+        # failure left the file truncated: it has been destroying itself once
+        # per run since it was wired up. Write atomically and store only the
+        # html and url.
+        _safe = {}
+        for _k, _v in cache.items():
+            if not isinstance(_v, dict):
+                continue
+            _safe[_k] = {
+                "page_source": _v.get("page_source") or "",
+                "final_url": _v.get("final_url") or _k,
+                "ts": _v.get("ts", 0),
+            }
+        import tempfile as _tf
+        _fd, _tmp = _tf.mkstemp(dir=".local", suffix=".tmp")
+        try:
+            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                json.dump(_safe, _f)
+            os.replace(_tmp, _HTTP_CACHE_FILE)
+        except Exception:
+            if os.path.exists(_tmp):
+                os.remove(_tmp)
+            raise
+    except Exception as _sw:
+        from aggregator.swallowed import swallow as _s; _s('cache.http_response_write', _sw)
+
+_HTTP_RESPONSE_CACHE = _load_http_cache()
+
+# Module-level Simplify method cache — loaded once, not per resolve() call
+_SIMPLIFY_METHOD_CACHE_FILE = os.path.join(".local", "simplify_method_cache.json")
+_SIMPLIFY_METHOD_CACHE = {}
+
+def _load_simplify_method_cache():
+    global _SIMPLIFY_METHOD_CACHE
+    try:
+        if os.path.exists(_SIMPLIFY_METHOD_CACHE_FILE):
+            _SIMPLIFY_METHOD_CACHE = json.load(open(_SIMPLIFY_METHOD_CACHE_FILE))
+    except Exception:
+        _SIMPLIFY_METHOD_CACHE = {}
+
+def _save_simplify_method_cache():
+    try:
+        from aggregator.atomic_json import write_json as _wj
+        _wj(_SIMPLIFY_METHOD_CACHE_FILE, _SIMPLIFY_METHOD_CACHE, indent=None)
+    except Exception as _sw:
+        from aggregator.swallowed import swallow as _s; _s('cache.simplify_method_write', _sw)
+
+_load_simplify_method_cache()
 
 
 def _cleanup_selenium_driver():
@@ -77,7 +188,8 @@ def _cleanup_selenium_driver():
         try:
             _SELENIUM_DRIVER.quit()
             logging.info("Selenium driver cleaned up")
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         _SELENIUM_DRIVER = None
 
@@ -88,8 +200,33 @@ _EMOJI_PATTERN = re.compile(
     r"[\U0001f600-\U0001f64f\U0001f300-\U0001f5ff\U0001f680-\U0001f6ff\U0001f1e0-\U0001f1ff]+",
     re.UNICODE,
 )
+def _sponsorship_from_row(row_text):
+    """zapplyjobs publishes a Visa column on every row:
+         '🏛 H-1B Co.'  -> company has sponsored H-1Bs before
+         '✅ Sponsor'   -> explicitly sponsors
+       Other repos use legend emoji in the title/company cell instead:
+         '🛂'           -> does NOT offer sponsorship
+         '🇺🇸'          -> requires US citizenship
+       This is free signal we were already fetching and discarding, and it is
+       the fastest way to fill the Sponsorship column without scraping pages.
+    """
+    if not row_text:
+        return "Unknown"
+    t = row_text
+    if "\U0001F6C2" in t:            # 🛂 does NOT sponsor
+        return "No"
+    if "\U0001F1FA\U0001F1F8" in t:  # 🇺🇸 US citizenship required
+        return "No"
+    low = t.lower()
+    if "sponsor" in low and "not" not in low and "no sponsor" not in low:
+        return "Yes"
+    if "h-1b" in low or "h1b" in low:
+        return "Yes"
+    return "Unknown"
+
+
 _HEADER_PATTERN = re.compile(
-    r"Company.*Role.*Location.*(?:Application|Link).*Date", re.I
+    r"Company.*(?:Role|Position|Job.?Title).*Location.*(?:Application|Link|Posting|Posted|Date|Age|Apply|Model|Visa)", re.I
 )
 _HTML_LINK_PATTERN = re.compile(r'<a\s+href="(https?://[^"]+)"')
 _MD_LINK_PATTERN = re.compile(r"\[.*?\]\((https?://[^\)]+)\)")
@@ -136,7 +273,72 @@ def safe_parse_html(html_content, preferred_parser=None):
     return None, None
 
 
+# ── Politeness: per-domain rate limit so we never hammer one ATS ──
+_DOMAIN_LAST_HIT = {}
+_DOMAIN_LOCK = threading.Lock()
+_MIN_DOMAIN_INTERVAL = 1.0  # seconds between requests to the SAME domain
+
+
+def _polite_wait(url):
+    """Sleep just enough that we hit any single domain at most 1x/sec."""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).netloc or "").lower()
+        if not host:
+            return
+        with _DOMAIN_LOCK:
+            last = _DOMAIN_LAST_HIT.get(host, 0.0)
+            wait = _MIN_DOMAIN_INTERVAL - (time.time() - last)
+            if wait > 0:
+                time.sleep(wait)
+            _DOMAIN_LAST_HIT[host] = time.time()
+    except Exception:
+        pass
+
+
+# ── Permanent "already fetched" cache: never re-fetch a job page ──
+_FETCHED_URLS_FILE = os.path.join(".local", "fetched_urls.json")
+_FETCHED_URLS = None
+_FETCHED_LOCK = threading.Lock()
+
+
+def _load_fetched_urls():
+    global _FETCHED_URLS
+    if _FETCHED_URLS is None:
+        try:
+            with open(_FETCHED_URLS_FILE) as f:
+                _FETCHED_URLS = set(json.load(f))
+        except Exception:
+            _FETCHED_URLS = set()
+    return _FETCHED_URLS
+
+
+def already_fetched(url):
+    """True if this job page was fetched in a previous run."""
+    return url in _load_fetched_urls()
+
+
+def mark_fetched(url):
+    with _FETCHED_LOCK:
+        _load_fetched_urls().add(url)
+
+
+def save_fetched_urls():
+    """Persist the fetched-URL set (call at end of run)."""
+    try:
+        os.makedirs(os.path.dirname(_FETCHED_URLS_FILE), exist_ok=True)
+        with _FETCHED_LOCK:
+            data = list(_load_fetched_urls())
+        tmp = _FETCHED_URLS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, _FETCHED_URLS_FILE)
+    except Exception as e:
+        logging.debug(f"save_fetched_urls failed: {e}")
+
+
 def retry_request(url, method="GET", max_retries=MAX_RETRIES, **kwargs):
+    _polite_wait(url)
     for attempt in range(max_retries):
         try:
             if method.upper() == "GET":
@@ -152,7 +354,8 @@ def retry_request(url, method="GET", max_retries=MAX_RETRIES, **kwargs):
             else:
                 logging.warning(f"HTTP {response.status_code} for {url}")
                 return response
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             time.sleep(RETRY_DELAY_SECONDS * (BACKOFF_MULTIPLIER**attempt))
     return None
 
@@ -167,7 +370,8 @@ class SimplifyRedirectResolver:
             try:
                 with open(FAILED_SIMPLIFY_CACHE, "r") as f:
                     return json.load(f)
-            except:
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
                 return {}
         return {}
 
@@ -176,11 +380,13 @@ class SimplifyRedirectResolver:
         try:
             with open(FAILED_SIMPLIFY_CACHE, "w") as f:
                 json.dump(cache, f, indent=2)
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
 
+    _success_cache = {}  # Only cache successful resolutions
+
     @staticmethod
-    @lru_cache(maxsize=500)
     def resolve(simplify_url):
         if "simplify.jobs/p/" not in simplify_url.lower():
             return simplify_url, False
@@ -188,6 +394,11 @@ class SimplifyRedirectResolver:
         if not job_id_match:
             return simplify_url, False
         job_id = job_id_match.group(1)
+        # Check success cache first (only successes are cached — never failures)
+        if job_id in SimplifyRedirectResolver._success_cache:
+            cached_url = SimplifyRedirectResolver._success_cache[job_id]
+            logging.debug(f"Simplify success cache hit: {job_id}")
+            return cached_url, True
         failed_cache = SimplifyRedirectResolver.load_failed_cache()
         import time as _time
         now_ts = _time.time()
@@ -203,24 +414,70 @@ class SimplifyRedirectResolver:
                     return simplify_url, False
         click_url = f"https://simplify.jobs/jobs/click/{job_id}"
 
-        actual_url = SimplifyRedirectResolver._method_1_http_redirect(click_url)
-        if actual_url:
-            logging.info(f"Simplify HTTP: {actual_url[:70]}")
-            return actual_url, True
+        # Use module-level cache instead of reading JSON per call
+        _method_cache = _SIMPLIFY_METHOD_CACHE
 
-        actual_url = SimplifyRedirectResolver._method_2_selenium_click(click_url)
-        if actual_url:
-            logging.info(f"Simplify Selenium: {actual_url[:70]}")
-            return actual_url, True
+        def _record_best(method_num):
+            try:
+                _SIMPLIFY_METHOD_CACHE["_global_best"] = method_num
+                _save_simplify_method_cache()
+            except Exception:
+                pass
 
-        actual_url = SimplifyRedirectResolver._method_3_api_fetch(job_id)
-        if actual_url:
-            logging.info(f"Simplify API: {actual_url[:70]}")
-            return actual_url, True
+        _preferred = _method_cache.get("_global_best")
+        _tried = set()
+
+        def _try(method_num, fn):
+            _tried.add(method_num)
+            result = fn()
+            if result:
+                _record_best(method_num)
+            return result
+
+        if _preferred == 1:
+            actual_url = _try(1, lambda: SimplifyRedirectResolver._method_1_http_redirect(click_url))
+            if actual_url:
+                logging.info(f"Simplify HTTP (preferred): {actual_url[:70]}")
+                SimplifyRedirectResolver._success_cache[job_id] = actual_url
+                return actual_url, True
+        elif _preferred == 2:
+            actual_url = _try(2, lambda: SimplifyRedirectResolver._method_2_selenium_click(click_url))
+            if actual_url:
+                logging.info(f"Simplify Selenium (preferred): {actual_url[:70]}")
+                SimplifyRedirectResolver._success_cache[job_id] = actual_url
+                return actual_url, True
+        elif _preferred == 3:
+            actual_url = _try(3, lambda: SimplifyRedirectResolver._method_3_api_fetch(job_id))
+            if actual_url:
+                logging.info(f"Simplify API (preferred): {actual_url[:70]}")
+                SimplifyRedirectResolver._success_cache[job_id] = actual_url
+                return actual_url, True
+
+        if 1 not in _tried:
+            actual_url = _try(1, lambda: SimplifyRedirectResolver._method_1_http_redirect(click_url))
+            if actual_url:
+                logging.info(f"Simplify HTTP: {actual_url[:70]}")
+                SimplifyRedirectResolver._success_cache[job_id] = actual_url
+                return actual_url, True
+
+        if 2 not in _tried:
+            actual_url = _try(2, lambda: SimplifyRedirectResolver._method_2_selenium_click(click_url))
+            if actual_url:
+                logging.info(f"Simplify Selenium: {actual_url[:70]}")
+                SimplifyRedirectResolver._success_cache[job_id] = actual_url
+                return actual_url, True
+
+        if 3 not in _tried:
+            actual_url = _try(3, lambda: SimplifyRedirectResolver._method_3_api_fetch(job_id))
+            if actual_url:
+                logging.info(f"Simplify API: {actual_url[:70]}")
+                SimplifyRedirectResolver._success_cache[job_id] = actual_url
+                return actual_url, True
 
         actual_url = SimplifyRedirectResolver._method_4_github_lookup(job_id)
         if actual_url:
             logging.info(f"Simplify GitHub: {actual_url[:70]}")
+            SimplifyRedirectResolver._success_cache[job_id] = actual_url
             return actual_url, True
 
         actual_url = SimplifyRedirectResolver._method_5_page_apply_button(simplify_url)
@@ -229,15 +486,16 @@ class SimplifyRedirectResolver:
             return "__INACTIVE__", False
         if actual_url:
             logging.info(f"Simplify Page: {actual_url[:70]}")
+            SimplifyRedirectResolver._success_cache[job_id] = actual_url
             return actual_url, True
         failed_cache[job_id] = time.time()
         SimplifyRedirectResolver.save_failed_cache(failed_cache)
 
         try:
-            with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".local", "simplify_manual_review.txt"), "a") as f:
-                f.write(f"{job_id}\t{simplify_url}\t{today}\n")
-        except Exception:
-            pass
+            from outreach.brain import Brain
+            Brain.get().queue_simplify_retry(job_id, simplify_url, "all_methods_failed")
+        except Exception as _be:
+            logging.debug(f"Brain Simplify queue failed: {_be}")
 
         logging.warning(f"All 5 methods failed: {simplify_url[:60]}")
         return simplify_url, False
@@ -256,7 +514,7 @@ class SimplifyRedirectResolver:
                 if SimplifyRedirectResolver._is_valid_job_url(response.url):
                     return response.url
 
-            if response and response.status_code == 200:
+            if response and 200 <= response.status_code < 400:
                 from aggregator.extractors import safe_parse_html
 
                 soup, _ = safe_parse_html(response.text)
@@ -279,7 +537,8 @@ class SimplifyRedirectResolver:
                     if SimplifyRedirectResolver._is_valid_job_url(redirect_url):
                         return redirect_url
 
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         return None
 
@@ -331,7 +590,8 @@ class SimplifyRedirectResolver:
             if _SELENIUM_DRIVER:
                 try:
                     _SELENIUM_DRIVER.quit()
-                except:
+                except Exception as _e:
+                    logging.debug("suppressed: %s", _e)
                     pass
                 _SELENIUM_DRIVER = None
 
@@ -361,35 +621,110 @@ class SimplifyRedirectResolver:
             if not soup:
                 return None
 
-            # Extract metadata from Simplify page text
+            # Extract rich metadata from Simplify page
             try:
-                page_text = soup.get_text(separator=" ")[:5000]
+                page_text = soup.get_text(separator=" ")[:8000]
                 import re as _sre
                 meta = {}
-                loc_match = _sre.search(r"(?:In Person|Hybrid|Remote)\s+([\w\s]+,\s*(?:[A-Z]{2}|[A-Za-z]+),\s*USA)", page_text)
-                if not loc_match:
-                    loc_match = _sre.search(r"(?:Internship|Company)\s+([\w\s]+,\s*(?:[A-Z]{2}|[A-Za-z]+),\s*USA)", page_text)
-                if not loc_match:
-                    loc_match = _sre.search(r"employees\s+([\w\s]+,\s*[A-Z]{2},\s*USA)", page_text)
-                if not loc_match:
-                    loc_match = _sre.search(r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2},\s*USA)", page_text)
-                if not loc_match:
-                    loc_match = _sre.search(r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2})\s+(?:Hybrid|Remote|In Person|On Site)", page_text)
-                if loc_match:
-                    loc_raw = loc_match.group(1).strip()
-                    loc_raw = _sre.sub(r",?\s*USA\s*$", "", loc_raw).strip()
-                    meta["location"] = loc_raw
-                if "In Person" in page_text[:3000]:
-                    meta["remote"] = "On Site"
-                elif "Hybrid" in page_text[:3000]:
-                    meta["remote"] = "Hybrid"
-                elif "Remote" in page_text[:3000]:
-                    meta["remote"] = "Remote"
-                if "No H1B Sponsorship" in page_text[:3000]:
-                    meta["no_h1b"] = True
+
+                # Try __NEXT_DATA__ first for structured metadata
+                _nd = soup.find("script", {"id": "__NEXT_DATA__"})
+                if _nd and _nd.string:
+                    try:
+                        import json as _mj
+                        _nd_data = _mj.loads(_nd.string)
+                        _props = _nd_data.get("props", {}).get("pageProps", {})
+                        _job = _props.get("job", _props.get("jobPosting", {}))
+                        if _job:
+                            # Location from structured data
+                            _loc = (_job.get("location") or _job.get("city", "") or
+                                    _job.get("jobLocation", {}).get("address", {}).get("addressLocality", ""))
+                            _state = (_job.get("state") or
+                                      _job.get("jobLocation", {}).get("address", {}).get("addressRegion", ""))
+                            if _loc and _state:
+                                meta["location"] = f"{_loc}, {_state}"
+                            elif _loc:
+                                meta["location"] = _loc
+                            # Salary from structured data
+                            _sal = (_job.get("salary") or _job.get("baseSalary", {}) or
+                                    _job.get("compensation", ""))
+                            if isinstance(_sal, dict):
+                                _min = _sal.get("minValue") or _sal.get("min", "")
+                                if _min:
+                                    meta["salary_min"] = float(str(_min).replace("$","").replace(",","").strip())
+                            elif isinstance(_sal, str) and "$" in _sal:
+                                _sm = _sre.search(r'\$(\d+(?:\.\d+)?)', _sal)
+                                if _sm:
+                                    meta["salary_min"] = float(_sm.group(1))
+                            # Sponsorship signal
+                            _tags = _job.get("tags", []) or _job.get("recommendationTags", [])
+                            if any("no h1b" in str(t).lower() or "no_h1b" in str(t).lower() for t in _tags):
+                                meta["no_h1b"] = True
+                            # Work type
+                            _wt = (_job.get("workModel") or _job.get("workplaceType", "")).lower()
+                            if "remote" in _wt:
+                                meta["remote"] = "Remote"
+                            elif "hybrid" in _wt:
+                                meta["remote"] = "Hybrid"
+                            elif "onsite" in _wt or "on_site" in _wt or "in_person" in _wt:
+                                meta["remote"] = "On Site"
+                    except Exception:
+                        pass
+
+                # Fallback: regex from page text
+                if not meta.get("location"):
+                    for _lp in [
+                        r"(?:In Person|Hybrid|Remote)\s+([\w\s]+,\s*[A-Z]{2}),?\s*USA",
+                        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2},\s*USA)",
+                        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2})\s+(?:Hybrid|Remote|In Person|On Site)",
+                        r"employees\s+([\w\s]+,\s*[A-Z]{2},\s*USA)",
+                        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+([A-Z]{2})\s+(?:USA)?",
+                    ]:
+                        _lm = _sre.search(_lp, page_text)
+                        if _lm:
+                            _lr = _lm.group(1).strip()
+                            _lr = _sre.sub(r",?\s*USA\s*$", "", _lr).strip()
+                            if _lr and len(_lr) > 3:
+                                meta["location"] = _lr
+                                break
+
+                # Remote fallback from page text
+                if not meta.get("remote"):
+                    _pt3 = page_text[:3000]
+                    if "In Person" in _pt3:
+                        meta["remote"] = "On Site"
+                    elif "Hybrid" in _pt3:
+                        meta["remote"] = "Hybrid"
+                    elif "Remote" in _pt3:
+                        meta["remote"] = "Remote"
+
+                # Salary fallback from page text
+                if not meta.get("salary_min"):
+                    for _sp in [
+                        r'\$(\d+(?:\.\d+)?)\s*/\s*hr',
+                        r'Compensation Overview\s+\$(\d+(?:\.\d+)?)',
+                        r'Pay Range[:\s]+\$(\d+(?:\.\d+)?)',
+                        r'\$(\d+(?:\.\d+)?)\s*(?:USD)?\s*/\s*hour',
+                    ]:
+                        _sm = _sre.search(_sp, page_text, _sre.I)
+                        if _sm:
+                            try:
+                                _sv = float(_sm.group(1))
+                                if 1 < _sv < 200:
+                                    meta["salary_min"] = _sv
+                                    break
+                            except Exception:
+                                pass
+
+                # No H1B fallback
+                if not meta.get("no_h1b"):
+                    if "No H1B" in page_text[:3000] or "no h1b" in page_text[:3000].lower():
+                        meta["no_h1b"] = True
+
+                            # WARNING: shared class state — unreliable with concurrent threads
                 SimplifyRedirectResolver._last_metadata = meta
                 if meta.get("location"):
-                    logging.info(f"Simplify metadata: location={meta['location']}, remote={meta.get('remote','?')}")
+                    logging.info(f"Simplify metadata: location={meta['location']}, remote={meta.get('remote','?')}, salary_min={meta.get('salary_min','?')}")
             except Exception as e:
                 logging.debug(f"Simplify metadata extraction failed: {e}")
 
@@ -520,10 +855,12 @@ class SimplifyRedirectResolver:
                         )
                         if SimplifyRedirectResolver._is_valid_job_url(actual_url):
                             return actual_url
-                except:
+                except Exception as _e:
+                    logging.debug("suppressed: %s", _e)
                     pass
 
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         return None
 
@@ -561,7 +898,8 @@ class SimplifyRedirectResolver:
                             if "simplify.jobs" not in url and job_id not in url:
                                 if SimplifyRedirectResolver._is_valid_job_url(url):
                                     return url
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         return None
 
@@ -571,10 +909,6 @@ class JobrightRedirectResolver:
 
     _email_html_cache = {}
 
-    @staticmethod
-    def cache_email_html(email_id, html_content):
-        """Store email HTML for URL extraction"""
-        JobrightRedirectResolver._email_html_cache[email_id] = html_content
 
     @staticmethod
     def resolve(jobright_url, email_html=None):
@@ -584,6 +918,21 @@ class JobrightRedirectResolver:
         """
         if "jobright.ai" not in jobright_url.lower():
             return jobright_url, False
+        # Freshness check: warn if cookies are > 30 days old
+        try:
+            import os as _os, time as _t
+            _cf = _os.path.join(_os.path.dirname(_os.path.dirname(
+                _os.path.abspath(__file__))), ".local", "jobright_cookies.json")
+            if _os.path.exists(_cf):
+                age_days = (_t.time() - _os.path.getmtime(_cf)) / 86400
+                if age_days > 30:
+                    logging.warning(
+                        f"⚠ Jobright cookies are {age_days:.0f} days old "
+                        f"(>30) — Jobright may fail silently. "
+                        f"Refresh by running: python3 -m aggregator --refresh-jobright"
+                    )
+        except Exception:
+            pass
 
         job_id = JobrightRedirectResolver._extract_job_id(jobright_url)
         if not job_id:
@@ -784,7 +1133,8 @@ class JobrightRedirectResolver:
                     logging.debug(f"Jobright Selenium button click: {apply_url[:80]}")
                     return apply_url
 
-            except:
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
                 pass
 
             current_url = _SELENIUM_DRIVER.current_url
@@ -852,6 +1202,21 @@ class JobrightAuthenticator:
                 logging.info(f"Loaded {len(self.cookies)} Jobright cookies")
             except Exception as e:
                 logging.error(f"Failed to load Jobright cookies: {e}")
+
+    def _cookies_are_fresh(self) -> bool:
+        """Check if Jobright cookies are still valid (< 6 hours old)."""
+        import time as _t, os as _os
+        cookie_file = _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+            ".local", "jobright_cookies.json"
+        )
+        if not _os.path.exists(cookie_file):
+            return False
+        try:
+            age = _t.time() - _os.path.getmtime(cookie_file)
+            return age < 6 * 3600  # fresh if < 6 hours
+        except Exception:
+            return False
 
     def login_interactive(self):
         if not SELENIUM_AVAILABLE:
@@ -970,7 +1335,8 @@ class JobrightAuthenticator:
             if driver:
                 try:
                     driver.quit()
-                except:
+                except Exception as _e:
+                    logging.debug("suppressed: %s", _e)
                     pass
 
 
@@ -988,7 +1354,8 @@ class EmailExtractor:
                 logging.warning(f"Corrupted token file: {e}")
                 try:
                     os.remove(GMAIL_TOKEN_FILE)
-                except:
+                except Exception as _e:
+                    logging.debug("suppressed: %s", _e)
                     pass
                 creds = None
         if creds and not creds.valid:
@@ -1000,7 +1367,8 @@ class EmailExtractor:
                     print("⚠️  Gmail token expired - re-authenticating...")
                     try:
                         os.remove(GMAIL_TOKEN_FILE)
-                    except:
+                    except Exception as _e:
+                        logging.debug("suppressed: %s", _e)
                         pass
                     creds = None
         if not creds:
@@ -1096,6 +1464,9 @@ class EmailExtractor:
             "swelist": "SWE List",
             "jobright": "Jobright",
             "fursah": "Fursah",
+            "jobalerts-noreply@linkedin.com": "LinkedIn",
+            "jobs-noreply@linkedin.com": "LinkedIn",
+            "linkedin.com": "LinkedIn",
         }
         for key, value in senders.items():
             if key in from_lower:
@@ -1125,11 +1496,55 @@ class EmailExtractor:
 
     @staticmethod
     def _extract_job_urls(email_html):
+        """Extract job URLs from email HTML.
+
+        For SWE List emails (class="internship" paragraphs), extracts
+        (url, company, title) tuples to preserve context.
+        For all other emails, returns plain URL list.
+        """
         soup, _ = safe_parse_html(email_html)
         if not soup:
             return []
         seen = set()
         urls = []
+
+        # ── SWE List format: <p class="internship"><strong>Co:</strong><a>Title</a></p>
+        swe_paragraphs = soup.find_all("p", class_="internship")
+        if swe_paragraphs:
+            for p in swe_paragraphs:
+                link = p.find("a", href=True)
+                strong = p.find("strong")
+                if not link:
+                    continue
+                url = link.get("href", "")
+                if not url.startswith("http") or EmailExtractor._is_non_job_url(url):
+                    continue
+                if url in seen:
+                    continue
+                seen.add(url)
+                # Extract company from <strong> tag
+                company_hint = ""
+                title_hint = ""
+                if strong:
+                    company_hint = strong.get_text().strip().rstrip(":").strip()
+                    # Validate: reject if company looks like a date/season/title
+                    import re as _swe_re
+                    _bad_company = (
+                        _swe_re.match(r'^(?:Fall|Spring|Summer|Winter)\s+20\d{2}$', company_hint, _swe_re.I)
+                        or _swe_re.match(r'^(?:Visiting|Senior|Junior|Lead|Staff)\s+', company_hint, _swe_re.I)
+                        or _swe_re.match(r'^(?:Intern|Co-op|Engineer|Developer|Analyst)', company_hint, _swe_re.I)
+                        or len(company_hint) > 60
+                        or not company_hint
+                    )
+                    if _bad_company:
+                        company_hint = ""
+                title_hint = link.get_text().strip()
+                # Store as tuple (url, company_hint, title_hint) for SWE List
+                urls.append((url, company_hint, title_hint))
+            if urls:
+                return urls
+
+        # ── Standard format: extract all job URLs as plain strings
         for link in soup.find_all("a", href=True):
             url = link.get("href", "")
             if url.startswith("http") and url not in seen:
@@ -1137,13 +1552,20 @@ class EmailExtractor:
                     if not EmailExtractor._is_non_job_url(url):
                         urls.append(url)
                         seen.add(url)
-                # ZipRecruiter: extract tracking redirect links (/km/, /ekm/, /jobs/)
                 elif "ziprecruiter.com/" in url.lower():
                     url_path = url.lower()
                     if any(p in url_path for p in ["/km/", "/ekm/", "/jobs/", "/k/"]):
                         if not EmailExtractor._is_non_job_url(url):
                             urls.append(url)
                             seen.add(url)
+                elif "linkedin.com/" in url.lower() and "/jobs/view/" in url.lower():
+                    # Deduplicate by job ID (each card has 3-4 links with different tracking)
+                    _li_match = re.search(r"/jobs/view/(\d+)", url)
+                    if _li_match:
+                        _li_clean = f"https://www.linkedin.com/jobs/view/{_li_match.group(1)}"
+                        if _li_clean not in seen:
+                            urls.append(_li_clean)
+                            seen.add(_li_clean)
         return urls
 
     @staticmethod
@@ -1165,25 +1587,255 @@ class EmailExtractor:
         return any(p in url.lower() for p in non_job)
 
 
+
+
+class LinkedInEmailParser:
+    """Parse LinkedIn Job Alert emails to extract structured job data.
+
+    LinkedIn email structure (per job card):
+      <td data-test-id="job-card">
+        <img alt="CompanyName">                              -> company (backup)
+        <a ...trk=...jobcard_body_ID...>Job Title</a>       -> title + LinkedIn URL
+        <p class="text-system-gray-100 ...">Co . Loc</p>    -> company + location
+
+    URLs: linkedin.com/comm/jobs/view/{job_id}?tracking...
+    """
+
+    @staticmethod
+    def parse_email_jobs(email_html):
+        """Parse LinkedIn alert email HTML -> {clean_url: {company, title, location, linkedin_job_id}}"""
+        if not email_html:
+            return {}
+
+        try:
+            soup, _ = safe_parse_html(email_html)
+            if not soup:
+                return {}
+
+            jobs = {}
+
+            # Primary anchor: data-test-id="job-card" -- LinkedIn own marker
+            job_cards = soup.find_all("td", attrs={"data-test-id": "job-card"})
+
+            if not job_cards:
+                # Fallback: "similar jobs" / "explore" emails use different structure
+                jobs = LinkedInEmailParser._parse_generic_format(soup)
+                if jobs:
+                    logging.info(f"LinkedIn email parser (generic format): extracted {len(jobs)} job cards")
+                    return jobs
+                logging.debug("LinkedIn parser: no job cards found in any format")
+                return {}
+
+            for card in job_cards:
+                try:
+                    job = LinkedInEmailParser._parse_single_card(card)
+                    if job and job.get("url"):
+                        jobs[job["url"]] = job
+                except Exception as e:
+                    logging.debug(f"LinkedIn card parse failed: {e}")
+                    continue
+
+            logging.info(f"LinkedIn email parser: extracted {len(jobs)} job cards")
+            return jobs
+
+        except Exception as e:
+            logging.debug(f"LinkedIn email parsing failed: {e}")
+            return {}
+
+    @staticmethod
+    def _parse_single_card(card):
+        """Extract company, title, location, URL from a single LinkedIn job card."""
+
+        # -- Step 1: Extract LinkedIn URL + job ID --
+        url = None
+        linkedin_job_id = None
+
+        for link in card.find_all("a", href=True):
+            href = link.get("href", "")
+            match = re.search(r"linkedin\.com/(?:comm/)?jobs/view/(\d+)", href)
+            if match:
+                linkedin_job_id = match.group(1)
+                url = f"https://www.linkedin.com/jobs/view/{linkedin_job_id}"
+                break
+
+        if not url or not linkedin_job_id:
+            return None
+
+        # -- Step 2: Extract title from jobcard_body link --
+        title = "Unknown"
+
+        for link in card.find_all("a", href=True):
+            href = link.get("href", "")
+            if "jobcard_body" in href:
+                text = link.get_text(strip=True)
+                if text and len(text) > 5:
+                    title = text
+                    break
+
+        if title == "Unknown":
+            title_link = card.find("a", class_=re.compile(r"text-md|text-color-brand"))
+            if title_link:
+                text = title_link.get_text(strip=True)
+                if text and len(text) > 5:
+                    title = text
+
+        # -- Step 3: Extract company + location from info line --
+        company = "Unknown"
+        location = "Unknown"
+
+        info_p = card.find("p", class_=re.compile(r"text-system-gray"))
+        if info_p:
+            info_text = info_p.get_text(strip=True)
+            if "\u00b7" in info_text:
+                parts = info_text.split("\u00b7", 1)
+                company = parts[0].strip()
+                raw_location = parts[1].strip() if len(parts) > 1 else "Unknown"
+                location = re.sub(r",?\s*United States\s*$", "", raw_location, flags=re.I).strip()
+                if not location:
+                    location = "United States"
+
+        # -- Step 4: Backup company from <img alt="CompanyName"> --
+        if company == "Unknown":
+            logo_img = card.find("img", alt=True)
+            if logo_img:
+                alt = logo_img.get("alt", "").strip()
+                _skip_alts = {"LinkedIn", "radar icon", "", "Prasad Kanade"}
+                if alt and alt not in _skip_alts and len(alt) > 1 and len(alt) < 100:
+                    company = alt
+
+        if title == "Unknown" and company == "Unknown":
+            return None
+
+        return {
+            "company": company,
+            "title": title,
+            "location": location,
+            "url": url,
+            "linkedin_job_id": linkedin_job_id,
+        }
+
+    @staticmethod
+    @staticmethod
+    def _parse_generic_format(soup):
+        """Parse LinkedIn 'similar jobs' and 'explore new jobs' email format.
+
+        These emails have one job per container:
+          <td data-test-id="email-generic-section-JOBS_POSTING_SECTION-job-cards">
+        Each contains a link with "Title | Company · Location | flavor" text
+        and a <p> with "Company · Location" info.
+        """
+        jobs = {}
+
+        containers = soup.find_all("td", attrs={
+            "data-test-id": "email-generic-section-JOBS_POSTING_SECTION-job-cards"
+        })
+        if not containers:
+            return {}
+
+        seen_ids = set()
+        for container in containers:
+            for link in container.find_all("a", href=True):
+                href = link.get("href", "")
+                match = re.search(r"linkedin\.com/(?:comm/)?jobs/view/(\d+)", href)
+                if not match:
+                    continue
+
+                linkedin_job_id = match.group(1)
+                if linkedin_job_id in seen_ids:
+                    continue
+
+                link_text = link.get_text(separator=" | ", strip=True)
+                # Normalize Unicode hyphens/dashes to ASCII
+                link_text = link_text.replace("‐", "-").replace("‑", "-").replace("–", "-").replace("—", "-").replace("−", "-")
+
+                # lxml parser may return empty text for links wrapping tables
+                # Fall back to container text which has "Title Company · Location flavor"
+                if not link_text or len(link_text) < 5:
+                    link_text = container.get_text(separator=" | ", strip=True)
+                    if not link_text or len(link_text) < 5:
+                        continue
+
+                # Only mark as seen AFTER we confirm this link has text
+                seen_ids.add(linkedin_job_id)
+
+                url = f"https://www.linkedin.com/jobs/view/{linkedin_job_id}"
+                title = "Unknown"
+                company = "Unknown"
+                location = "Unknown"
+
+                # Extract company + location from <p> with middot
+                for p in container.find_all("p"):
+                    p_text = p.get_text(strip=True)
+                    if "·" in p_text and len(p_text) < 200:
+                        parts = p_text.split("·", 1)
+                        company = parts[0].strip()
+                        raw_loc = parts[1].strip() if len(parts) > 1 else "Unknown"
+                        location = re.sub(r",?\s*United States\s*$", "", raw_loc, flags=re.I).strip()
+                        location = re.sub(r"\s*\((?:On-site|Hybrid|Remote)\)\s*$", "", location, flags=re.I).strip()
+                        if not location:
+                            location = "United States"
+                        break
+
+                # Extract title from link text
+                if company != "Unknown" and company in link_text:
+                    title_part = link_text.split(company)[0].strip().rstrip(" |").strip()
+                    if title_part and len(title_part) > 3:
+                        title = title_part
+                elif " | " in link_text:
+                    segments = [s.strip() for s in link_text.split(" | ") if s.strip()]
+                    if segments and len(segments[0]) > 3:
+                        title = segments[0]
+
+                # Backup company from <img alt>
+                if company == "Unknown":
+                    img = container.find("img", alt=True)
+                    if img:
+                        alt = img.get("alt", "").strip()
+                        skip_alts = {"LinkedIn", "radar icon", "", "Prasad Kanade"}
+                        if alt and alt not in skip_alts and len(alt) > 1 and len(alt) < 100:
+                            company = alt
+
+                if title == "Unknown" and company == "Unknown":
+                    continue
+
+                jobs[url] = {
+                    "company": company,
+                    "title": title,
+                    "location": location,
+                    "url": url,
+                    "linkedin_job_id": linkedin_job_id,
+                }
+
+                break  # One job per container, move to next
+
+        return jobs
+
+
 class PageFetcher:
     def __init__(self):
         self.session = _SESSION
 
     def check_url_health(self, url):
         if url in _URL_HEALTH_CACHE:
-            return _URL_HEALTH_CACHE[url]
+            cached = _URL_HEALTH_CACHE[url]
+            # FIX 3: support both old tuple format and new dict format
+            if isinstance(cached, dict):
+                return cached["healthy"], cached["status"]
+            return cached
         response = retry_request(url, method="HEAD", max_retries=2)
         if response:
             is_healthy = 200 <= response.status_code < 400 or response.status_code in [
-                301,
-                302,
-                303,
-                307,
-                308,
+                301, 302, 303, 307, 308,
             ]
-            _URL_HEALTH_CACHE[url] = (is_healthy, response.status_code)
+            _URL_HEALTH_CACHE[url] = {
+                "healthy": is_healthy,
+                "status": response.status_code,
+                "ts": time.time()
+            }
+            _save_url_health_cache(_URL_HEALTH_CACHE)
             return is_healthy, response.status_code
-        _URL_HEALTH_CACHE[url] = (False, 0)
+        _URL_HEALTH_CACHE[url] = {"healthy": False, "status": 0, "ts": time.time()}
+        _save_url_health_cache(_URL_HEALTH_CACHE)
         return False, 0
 
     _failed_urls = None
@@ -1198,9 +1850,38 @@ class PageFetcher:
                         cls._failed_urls = json.load(f)
                 else:
                     cls._failed_urls = {}
-            except:
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
                 cls._failed_urls = {}
         return cls._failed_urls
+
+    @classmethod
+    def _prune_failed_urls(cls):
+        try:
+            from aggregator.config import FAILED_URLS_FILE
+            import datetime as _dt
+            if not os.path.exists(FAILED_URLS_FILE):
+                return
+            data = json.load(open(FAILED_URLS_FILE))
+            cutoff = _dt.datetime.now() - _dt.timedelta(days=30)
+            pruned = {}
+            for k, v in data.items():
+                if isinstance(v, str):
+                    try:
+                        keep = _dt.datetime.fromisoformat(v[:10]) > cutoff
+                    except Exception:
+                        keep = True
+                elif isinstance(v, dict):
+                    keep = v.get("ts", time.time()) > time.time() - 30*86400
+                else:
+                    keep = True
+                if keep:
+                    pruned[k] = v
+            if len(pruned) < len(data):
+                json.dump(pruned, open(FAILED_URLS_FILE, "w"), indent=2)
+                logging.debug(f"Pruned failed URLs: {len(data)} → {len(pruned)}")
+        except Exception as _sw:
+            from aggregator.swallowed import swallow as _s; _s('cache.failed_urls_prune', _sw)
 
     @classmethod
     def _save_failed_url(cls, url):
@@ -1211,12 +1892,16 @@ class PageFetcher:
             from aggregator.config import FAILED_URLS_FILE
             with open(FAILED_URLS_FILE, "w") as f:
                 json.dump(failed, f, indent=2)
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
 
     def fetch_page(self, url):
-        if url in _HTTP_RESPONSE_CACHE:
-            cached = _HTTP_RESPONSE_CACHE[url]
+        # Was `if url in _HTTP_RESPONSE_CACHE`, which BYPASSED the 6-hour TTL
+        # that _http_cache_get() enforces - a stale page could be served as
+        # fresh, and a stale page means a stale posting date.
+        cached = _http_cache_get(url)
+        if cached is not None:
             return cached["response"], cached["final_url"], cached["page_source"]
 
         # Check failed URL cache (skip URLs that failed before today)
@@ -1227,15 +1912,35 @@ class PageFetcher:
             logging.debug(f"Skipping previously failed URL: {url[:60]}")
             return None, None, None
 
-        is_healthy, status = self.check_url_health(url)
-        if not is_healthy and status in [404, 403, 405]:
-            logging.info(f"Skipping unhealthy URL: {url} (status {status})")
-            _HTTP_RESPONSE_CACHE[url] = {
-                "response": None,
-                "final_url": None,
-                "page_source": None,
-            }
-            return None, None, None
+        # HEAD health check disabled — slow and redundant, failed fetches handled downstream
+        # is_healthy, status = self.check_url_health(url)
+
+        # WORKDAY: use the JSON API, not a browser.
+        # Workday pages render entirely in JavaScript, so a plain fetch
+        # returns 0 characters. The Selenium branch below was meant to cover
+        # that, but chromedriver is not installed, so it fails and falls
+        # through to the plain fetch. Result: no Workday job has ever been
+        # checked for undergraduate-only, clearance, sponsorship, PhD or page
+        # age - across 227 discovered tenants.
+        #
+        # The CXS API returns the same posting as JSON in one request, no
+        # browser required. Verified on P&G: 8,622 characters containing
+        # "In process of obtaining a Bachelors degree" and "Immigration
+        # Sponsorship is not available for this role", neither of which
+        # appears in the HTML.
+        if url and "myworkdayjobs.com" in url.lower():
+            try:
+                from aggregator.workday_api import fetch_description
+                _wd = fetch_description(url)
+                if _wd and len(_wd) > 200:
+                    _resp = self._create_mock_response(_wd, url)
+                    _HTTP_RESPONSE_CACHE[url] = {
+                        "response": _resp, "final_url": url, "page_source": _wd,
+                    }
+                    logging.debug(f"Workday API: {len(_wd)} chars for {url[:60]}")
+                    return _resp, url, _wd
+            except Exception as _we:
+                logging.debug(f"Workday API failed: {_we}")
 
         if self._is_js_heavy_platform(url):
             html, final_url, page_source = self._try_selenium(url)
@@ -1249,13 +1954,62 @@ class PageFetcher:
                 return response, final_url, page_source
 
         response = retry_request(url)
-        if response and response.status_code == 200:
+        if response and 200 <= response.status_code < 400:
             _HTTP_RESPONSE_CACHE[url] = {
                 "response": response,
                 "final_url": response.url,
                 "page_source": response.text,
             }
             return response, response.url, response.text
+
+        # Auth walls: stop retrying a host that has rejected us repeatedly.
+        #
+        # Indeed began returning 401 on every viewjob URL. Each one then cost
+        # two alternate-user-agent requests plus a full Selenium launch, all
+        # landing on secure.indeed.com/auth: 44 jobs, 132 wasted requests and
+        # zero results in one run. A login wall does not become friendlier in
+        # a browser, so retrying it is guaranteed waste.
+        #
+        # Counted per host per process, not persisted: if the block lifts the
+        # next run finds out on its own, with no state to expire.
+        if getattr(response, 'status_code', None) in (401, 403):
+            try:
+                import urllib.parse as _up
+                _host = _up.urlparse(url).netloc.lower().replace('www.', '')
+            except Exception:
+                _host = ''
+            if _host:
+                _seen = getattr(PageFetcher, '_authwall_hosts', None)
+                if _seen is None:
+                    _seen = PageFetcher._authwall_hosts = {}
+                _n = _seen.get(_host, 0) + 1
+                _seen[_host] = _n
+                if _n == 3:
+                    logging.warning(
+                        'AUTH WALL: %s returned 401/403 three times, '
+                        'skipping UA retries and Selenium for this host' % _host)
+                if _n >= 3:
+                    _HTTP_RESPONSE_CACHE[url] = {
+                        'response': None, 'final_url': None, 'page_source': None,
+                    }
+                    return None, None, None
+
+        # Auto-retry with different user agents before falling back to Selenium
+        if not response or response.status_code not in [404, 410]:
+            for _alt_ua in USER_AGENTS[1:3]:
+                try:
+                    import requests as _req
+                    _r = _req.get(url, timeout=15, headers={"User-Agent": _alt_ua}, allow_redirects=True)
+                    if _r and 200 <= _r.status_code < 400:
+                        logging.info(f"Retry with alt UA succeeded: {url[:60]}")
+                        _HTTP_RESPONSE_CACHE[url] = {
+                            "response": _r,
+                            "final_url": _r.url,
+                            "page_source": _r.text,
+                        }
+                        return _r, _r.url, _r.text
+                except Exception:
+                    continue
 
         if SELENIUM_AVAILABLE:
             logging.info(f"Standard request failed, trying Selenium for {url}")
@@ -1334,7 +2088,8 @@ class PageFetcher:
                 WebDriverWait(_SELENIUM_DRIVER, max_wait).until(
                     lambda d: d.execute_script("return document.readyState") == "complete"
                 )
-            except:
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
                 pass
             # Short extra wait for JS rendering
             extra = 3 if ("oracle" in url_lower or "workday" in url_lower) else 1
@@ -1344,7 +2099,8 @@ class PageFetcher:
                 WebDriverWait(_SELENIUM_DRIVER, 5).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "h1, h2, [data-automation-id], .job-title, .posting-headline"))
                 )
-            except:
+            except Exception as _e:
+                logging.debug("suppressed: %s", _e)
                 pass
 
             _SELENIUM_DRIVER.execute_script(
@@ -1362,7 +2118,8 @@ class PageFetcher:
             if _SELENIUM_DRIVER:
                 try:
                     _SELENIUM_DRIVER.quit()
-                except:
+                except Exception as _e:
+                    logging.debug("suppressed: %s", _e)
                     pass
                 _SELENIUM_DRIVER = None
 
@@ -1395,7 +2152,8 @@ class PageParser:
                         title = data["title"]
                         if 5 < len(title) < 200:
                             candidates.append((title, 100))
-                except:
+                except Exception as _e:
+                    logging.debug("suppressed: %s", _e)
                     pass
 
             meta_title = soup.find("meta", {"property": "og:title"})
@@ -1432,7 +2190,8 @@ class PageParser:
                         title = elem.get_text().strip()
                         if 5 < len(title) < 200:
                             candidates.append((title, priority))
-                except:
+                except Exception as _e:
+                    logging.debug("suppressed: %s", _e)
                     pass
 
             h1_tags = soup.find_all("h1", limit=3)
@@ -1514,7 +2273,8 @@ class PageParser:
                 if days > MAX_REASONABLE_AGE_DAYS or days < 0:
                     return None
             return days
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             return None
 
     @staticmethod
@@ -1601,7 +2361,8 @@ class JobTypeExtractor:
                 data = json.loads(script.string)
                 emp_type = data.get("employmentType", "")
                 return JobTypeExtractor._normalize_type(emp_type)
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         return "Unknown"
 
@@ -1617,7 +2378,8 @@ class JobTypeExtractor:
                 meta = soup.find("meta", {"name": name})
                 if meta and meta.get("content"):
                     return JobTypeExtractor._normalize_type(meta.get("content"))
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         return "Unknown"
 
@@ -1639,7 +2401,8 @@ class JobTypeExtractor:
                     normalized = JobTypeExtractor._normalize_type(text)
                     if normalized != "Unknown":
                         return normalized
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         return "Unknown"
 
@@ -1657,7 +2420,8 @@ class JobTypeExtractor:
                 match = re.search(pattern, text, re.I)
                 if match:
                     return JobTypeExtractor._normalize_type(match.group(group))
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         return "Unknown"
 
@@ -1671,7 +2435,8 @@ class JobTypeExtractor:
                 return "Co-op"
             if "/fellowship/" in url_lower:
                 return "Fellowship"
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         return "Unknown"
 
@@ -1887,9 +2652,6 @@ class SourceParsers:
     def parse_ziprecruiter_email(soup, url):
         return None
 
-    @staticmethod
-    def parse_adzuna_email(soup, url):
-        return None
 
 
 
@@ -1898,8 +2660,32 @@ class ZipRecruiterResolver:
     """Resolves ZipRecruiter job pages to actual company URLs."""
 
     @staticmethod
+    def _strip_auth_params(url):
+        """FIX 6: Remove expiring auth tokens from ZipRecruiter URLs before storing."""
+        if not url:
+            return url
+        try:
+            import urllib.parse
+            parsed = urllib.parse.urlparse(url)
+            params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            # Remove known expiring/tracking params
+            _strip = {"auth_token", "expires", "contact_id", "tsid", "utm_source",
+                      "utm_medium", "utm_campaign", "utm_content", "utm_term"}
+            clean = {k: v for k, v in params.items() if k.lower() not in _strip}
+            new_query = urllib.parse.urlencode(clean, doseq=True)
+            clean_url = urllib.parse.urlunparse((
+                parsed.scheme, parsed.netloc, parsed.path,
+                parsed.params, new_query, ""
+            ))
+            return clean_url
+        except Exception:
+            return url
+
+    @staticmethod
     def resolve(ziprecruiter_url):
         """Fetch ZipRecruiter page, find Apply button, extract actual company URL."""
+        # FIX 6: strip auth tokens from the input URL before resolving
+        ziprecruiter_url = ZipRecruiterResolver._strip_auth_params(ziprecruiter_url)
         try:
             response = retry_request(ziprecruiter_url, max_retries=2)
             if not response or response.status_code != 200:
@@ -1969,7 +2755,8 @@ class ZipRecruiterResolver:
                 final = response.url
                 if "ziprecruiter.com" not in final:
                     return final
-        except:
+        except Exception as _e:
+            logging.debug("suppressed: %s", _e)
             pass
         return None
 
@@ -2109,22 +2896,54 @@ class SimplifyGitHubScraper:
         header = lines[header_idx]
         delimiter = "\t" if "\t" in header else "|"
         start = header_idx + 1 if delimiter == "\t" else header_idx + 2
+        last_company = ""  # FIX 6: initialize before loop to prevent UnboundLocalError
         for line in lines[start:]:
             if not line.strip():
                 continue
-            parts = [p.strip() for p in line.split(delimiter) if p.strip()]
+            _cells = [p.strip() for p in line.split(delimiter)]
+            # Markdown rows are wrapped in the delimiter, so drop the OUTER
+            # empties only. Interior blanks must be kept or every column after
+            # a blank cell shifts left (company becomes title, title becomes
+            # location). That shift produced the junk company names in the sheet.
+            if delimiter == "|":
+                if _cells and _cells[0] == "":
+                    _cells = _cells[1:]
+                if _cells and _cells[-1] == "":
+                    _cells = _cells[:-1]
+            parts = _cells
             if len(parts) < 5:
                 continue
-            raw_company = _EMOJI_PATTERN.sub("", parts[0]).strip()
+            # Strip HTML tags from company cell (SpeedyApply wraps in <a><strong>)
+            _co_cell = re.sub(r"<[^>]+>", "", parts[0])
+            _co_cell = re.sub(r"\*\*", "", _co_cell)  # Strip markdown bold
+            raw_company = _EMOJI_PATTERN.sub("", _co_cell).strip()
             if raw_company and "↳" not in raw_company:
                 company = raw_company
                 last_company = company
             else:
                 company = last_company
+                if not company:
+                    continue  # FIX 6: skip continuation rows with no known parent company
             title = _EMOJI_PATTERN.sub("", parts[1]).strip()
             location = _EMOJI_PATTERN.sub("", parts[2]).strip()
-            link_cell = parts[3]
-            age = parts[4]
+            # Find the apply link by scanning cells from the end (link is always
+            # in the last populated cell; column count varies by source: Visa, Salary, etc.)
+            link_cell = ""
+            age = ""
+            for _cell in reversed(parts[2:]):
+                if _HTML_LINK_PATTERN.search(_cell) or _MD_LINK_PATTERN.search(_cell) or _cell.startswith("http"):
+                    link_cell = _cell
+                    break
+            # age = first cell after location that looks like a short duration
+            for _cell in parts[3:]:
+                _cs = _cell.strip()
+                if re.match(r"^\d+[dhmw]", _cs):
+                    age = _cs
+                    break
+                # calendar date column: "Aug 05", "Oct 22", "2026-08-01"
+                if re.match(r"^[A-Za-z]{3}\s+\d{1,2}$", _cs) or re.match(r"^\d{4}-\d{2}-\d{2}$", _cs):
+                    age = _cs
+                    break
             match = _HTML_LINK_PATTERN.search(link_cell) or _MD_LINK_PATTERN.search(
                 link_cell
             )
@@ -2145,6 +2964,7 @@ class SimplifyGitHubScraper:
                     "is_closed": False,
                     "source": source_name,
                     "github_category": "",
+                    "sponsorship": _sponsorship_from_row(line),
                 }
             )
         return jobs
@@ -2155,6 +2975,16 @@ class SimplifyGitHubScraper:
         last_company = ""
         for table in soup.find_all("table"):
             github_category = ""
+            # Map the "Date Posted"/"Age" column by header name (not fixed index).
+            _date_col = None
+            _hdr_row = table.find("tr")
+            if _hdr_row:
+                _hdr_cells = _hdr_row.find_all(["th", "td"])
+                for _hi, _hc in enumerate(_hdr_cells):
+                    _htxt = _hc.get_text(strip=True).lower()
+                    if "date" in _htxt or "posted" in _htxt or _htxt == "age":
+                        _date_col = _hi
+                        break
             prev = table.find_previous(["h2", "h3"])
             if prev:
                 ht = prev.get_text(strip=True).lower()
@@ -2179,12 +3009,22 @@ class SimplifyGitHubScraper:
                         continue
                 title = _EMOJI_PATTERN.sub("", cells[1].get_text(strip=True))
                 location = _EMOJI_PATTERN.sub("", cells[2].get_text(strip=True))
-                age = cells[4].get_text(strip=True)
-                apply_link = cells[3].find("a", href=True)
+                if _date_col is not None and _date_col < len(cells):
+                    age = cells[_date_col].get_text(strip=True)
+                elif len(cells) >= 5:
+                    age = cells[4].get_text(strip=True)
+                else:
+                    age = ""
+                apply_link = None
+                for _c in cells[2:]:
+                    _a = _c.find("a", href=True)
+                    if _a and _a.get("href", "").startswith("http"):
+                        apply_link = _a
+                        break
                 if not apply_link:
                     continue
                 url = apply_link.get("href", "")
-                is_closed = "🔒" in str(cells[3])
+                is_closed = "🔒" in str(row)
                 jobs.append(
                     {
                         "company": company,

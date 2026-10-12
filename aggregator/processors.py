@@ -125,14 +125,394 @@ def log_detailed_rejection(
 # ============================================================================
 
 
+
+# ── hard non-tech gate ────────────────────────────────────────────────────────
+# NON_TECHNICAL_PURE is scored against TECHNICAL_ROLE_KEYWORDS, and both
+# "engineer" and "engineering" count as technical - so every non-software
+# engineering discipline passed the filter. These phrases are certain, so they
+# are checked before any scoring happens.
+#
+# Narrow by design. Fail-open is the rule: only unambiguous disciplines appear
+# here, and any software signal in the title overrides the match.
+
+_HARD_NON_TECH_PATTERNS = (
+    r"packaging\s+engineer",
+    # "quality engineer" deliberately omitted: you applied to BorgWarner's
+    # Quality Engineering Intern, and QE at a software company is a real
+    # SWE-adjacent role. It was the only phrase here with a known false
+    # positive against 1,797 existing rows.
+    r"process\s+engineer",
+    r"mechanical\s+engineer",
+    r"industrial\s+engineer",
+    r"materials?\s+engineer",
+    r"civil\s+engineer",
+    r"structural\s+engineer",
+    r"chemical\s+engineer",
+    r"manufacturing\s+engineer",
+    r"biomedical\s+engineer",
+    r"aerospace\s+engineer",
+    r"\bpackaging\b",
+    r"\baudit\b",
+    r"\baccounting\b",
+    r"sales\s+development\s+representative",
+    r"\bcpa\b",
+)
+
+# A software signal outranks the discipline: "Software Quality Engineer" is a
+# SWE role, "Quality Engineer" is not.
+_HARD_NON_TECH_RESCUE = (
+    r"\bsoftware\b", r"\bsde\b", r"\bmachine\s+learning\b", r"\bml\b",
+    r"\bdata\s+(engineer|scien|analy)", r"\bbackend\b", r"\bfrontend\b",
+    r"\bfull[\s-]?stack\b", r"\bdevops\b", r"\bcloud\b",
+    r"\bplatform\s+engineer", r"\bsite\s+reliability\b", r"\bsre\b",
+    r"\bcomputer\s+scien", r"\bautomation\s+engineer", r"\bfirmware\b",
+    r"\bembedded\s+software\b", r"\bai\b", r"\bartificial\s+intelligence\b",
+)
+
+_HARD_NT_RE = [re.compile(_p, re.I) for _p in _HARD_NON_TECH_PATTERNS]
+_HARD_NT_RESCUE_RE = [re.compile(_p, re.I) for _p in _HARD_NON_TECH_RESCUE]
+
+
+def _is_hard_non_tech(title):
+    """True only when the title is certainly not a CS/SWE role."""
+    t = (title or "").strip()
+    if not t:
+        return False
+    if any(_r.search(t) for _r in _HARD_NT_RESCUE_RE):
+        return False
+    return any(_h.search(t) for _h in _HARD_NT_RE)
+
+
+
+# ── keyword matching ─────────────────────────────────────────────────────────
+# Short keywords were matched as substrings, so "ai" fired on railcar, chair,
+# maintenance and claim, and "ran" fired on branch and grant. Entries of four
+# characters or fewer now require a word boundary; longer entries keep
+# substring matching so stems like "develop" still match "developer".
+
+_KW_BOUNDARY_MAX = 4
+_KW_CACHE = {}
+
+
+def _kw_patterns(keywords, _cache=_KW_CACHE):
+    """Compile once per keyword tuple. Recompiling per title costs real time
+    at 15,000 rows a week."""
+    key = id(keywords)
+    cached = _cache.get(key)
+    if cached is not None:
+        return cached
+    pats = []
+    for kw in keywords:
+        k = (kw or "").strip()
+        if not k:
+            continue
+        if len(k.replace(" ", "")) <= _KW_BOUNDARY_MAX:
+            # not \b: that fails next to & and /, so AI/ML and R&D would miss
+            pat = r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(k)
+        else:
+            pat = re.escape(k)
+        pats.append((kw, re.compile(pat, re.I)))
+    _cache[key] = pats
+    return pats
+
+
+def _kw_hits(keywords, text):
+    """Keywords present in text, boundary-aware for short entries."""
+    t = (text or "").lower()
+    return [kw for kw, rx in _kw_patterns(keywords) if rx.search(t)]
+
+
+def _kw_count(keywords, text):
+    return len(_kw_hits(keywords, text))
+
+
+def _kw_any(keywords, text):
+    t = (text or "").lower()
+    return any(rx.search(t) for _, rx in _kw_patterns(keywords))
+
+
+
+# ── seniority level ──────────────────────────────────────────────────────────
+# Level 3 and above generally means several years of experience. The filter
+# only treats a number as a level when it directly follows a role word and is
+# not a duration, a year, or a technology - "Software Developer - 4 Months" is
+# a co-op posting, not a level 4 role.
+
+_LEVEL_MAX = 2
+
+_LEVEL_ROLE = (r"(?:engineer|engineering|developer|dev|swe|sde|scientist|"
+               r"analyst|architect|programmer|specialist|consultant|"
+               r"administrator)")
+
+_LEVEL_NOT_AFTER = (r"(?:month|months|mo|week|weeks|wk|year|years|yr|yrs|"
+                    r"shift|hour|hours|hrs|day|days|g\b|nm\b)")
+
+_ROMAN_VALUES = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6,
+                 "vii": 7, "viii": 8, "ix": 9, "x": 10}
+
+# An intern or co-op posting is not a senior role regardless of any number.
+_EARLY_CAREER_RE = re.compile(
+    r"\b(intern|internship|co-?op|new\s*grad|newgrad|graduate\s+program|"
+    r"campus|entry[\s-]?level|apprentice|trainee|university)\b", re.I)
+
+_LEVEL_DIGIT_RE = re.compile(
+    r"\b%s\b[\s,\-\u2013\u2014]*(\d{1,2})(?![\d])(?!\s*%s)"
+    % (_LEVEL_ROLE, _LEVEL_NOT_AFTER), re.I)
+
+_LEVEL_ROMAN_RE = re.compile(
+    r"\b%s\b[\s,\-\u2013\u2014]*((?:i{1,3}|iv|vi{0,3}|ix|x))\b"
+    % _LEVEL_ROLE, re.I)
+
+# L5, IC4, E4, T5, P3 - standalone tokens only
+_LEVEL_LADDER_RE = re.compile(r"\b(?:l|ic|e|t|p)(\d{1,2})\b", re.I)
+
+
+def _detect_seniority_level(title):
+    """Highest level found in the title, or None."""
+    t = (title or "").strip()
+    if not t:
+        return None
+    levels = []
+    for _m in _LEVEL_DIGIT_RE.finditer(t):
+        _n = int(_m.group(1))
+        if 1 <= _n <= 12:
+            levels.append(_n)
+    for _m in _LEVEL_ROMAN_RE.finditer(t):
+        _n = _ROMAN_VALUES.get(_m.group(1).lower())
+        if _n:
+            levels.append(_n)
+    for _m in _LEVEL_LADDER_RE.finditer(t):
+        _n = int(_m.group(1))
+        if 1 <= _n <= 12:
+            levels.append(_n)
+    return max(levels) if levels else None
+
+
+def _is_too_senior(title, max_level=_LEVEL_MAX):
+    """True when the title carries a level above max_level."""
+    if _EARLY_CAREER_RE.search(title or ""):
+        return False
+    _lvl = _detect_seniority_level(title)
+    return _lvl is not None and _lvl > max_level
+
+
+
+# ── hard non-technical qualifiers ────────────────────────────────────────────
+# Words that settle the question on their own. Kept apart from
+# NON_TECHNICAL_PURE, which holds softer terms like "business" and "sales"
+# that appear in genuine tech titles and so must not win a tie.
+
+_HARD_NT_QUALIFIERS = (
+    "underwriting", "actuarial", "credit risk", "financial analyst",
+    "finance analyst", "investment analyst", "treasury", "tax analyst",
+    "payroll", "benefits analyst", "procurement", "claims adjuster",
+    "claims representative", "policy analyst", "budget analyst",
+    "billing analyst", "collections", "hcm", "basis administrator",
+    "loan officer", "branch manager", "teller", "bookkeep",
+)
+
+# A software signal overrides the qualifier. A payroll company still hires
+# engineers, and "Payroll Systems Engineer" is one of them.
+_HARD_NT_RESCUE = (
+    r"\bsoftware\b", r"\bengineer\b", r"\bengineering\b", r"\bdeveloper\b",
+    r"\bsde\b", r"\bswe\b", r"\bbackend\b", r"\bfrontend\b",
+    r"\bfull[\s-]?stack\b", r"\bdevops\b", r"\bplatform\s+engineer",
+    r"\bdata\s+(?:engineer|scien)", r"\bmachine\s+learning\b",
+    r"\bsite\s+reliability\b", r"\bsre\b", r"\bcomputer\s+scien",
+    r"\bembedded\b", r"\bfirmware\b", r"\bprogrammer\b", r"\barchitect\b",
+    # "Data Analyst, Credit Risk" is a data analyst role; credit risk is the
+    # domain it sits in, not the job. Same for "Collections Data Analyst".
+    # Without this the hard gate fires before the scoring ever sees tech=3.
+    r"\bdata\s+analyst\b", r"\bbusiness\s+intelligence\b",
+    r"\banalytics\s+engineer\b", r"\bquantum\b",
+)
+
+_HARD_NT_RE = [re.compile(r"(?<![a-z])%s" % re.escape(_w), re.I)
+               for _w in _HARD_NT_QUALIFIERS]
+_HARD_NT_RESCUE_RE = [re.compile(_p, re.I) for _p in _HARD_NT_RESCUE]
+
+
+def _is_hard_non_technical(title):
+    """True when the title is unambiguously a non-technical business role."""
+    _t = (title or "").strip()
+    if not _t:
+        return False
+    if any(_r.search(_t) for _r in _HARD_NT_RESCUE_RE):
+        return False
+    return any(_h.search(_t) for _h in _HARD_NT_RE)
+
+
+
+# ── hardware and non-software engineering ────────────────────────────────────
+# "engineer" is a technical keyword, so Thermal Engineer and Resident Paint
+# Engineer pass the CS gate. These are real engineering, just not software.
+#
+# Deliberately separate from _is_hard_non_technical: that gate rescues on a
+# bare \bengineer\b, which every discipline below would satisfy.
+
+_HW_DISCIPLINES = (
+    # thermal, mechanical, materials, civil
+    "thermal engineer", "paint engineer", "mechanical engineer",
+    "materials engineer", "structural engineer", "civil engineer",
+    "chemical engineer", "industrial engineer", "manufacturing engineer",
+    "packaging engineer", "project engineer", "facilities engineer",
+    "maintenance engineer",
+    # semiconductor and fab
+    "process integration", "process engineer", "dram", "wafer",
+    "lithography", "photonics", "physical design", "yield engineer",
+    "failure analysis", "device engineer", "product engineering",
+    "silicon validation", "validation engineer", "soc power",
+    # RF, analog, power
+    "rfic", "gan ", "power amplifier", "power ip", "analog design",
+    "rf engineer", "rf design", "antenna", "signal integrity",
+    "signal processing", "radar", "power electronics",
+    "electrical engineer", "electronic engineer",
+    # plant-floor controls and automation, not robotics software
+    "controls engineer", "control systems engineer", "plc",
+    "automation execution", "material handling", "instrumentation",
+    # field, presales, support engineering
+    "field engineering", "field engineer", "field application",
+    "application engineer", "sales engineer", "presales",
+    "technical support engineer",
+    # life sciences and clinical
+    "certified coder", "medical coder", "clinical investigator",
+    "microbiologist", "chemist", "chemistry", "biolog", "pharmacolog",
+    "immunolog", "toxicolog", "medicinal", "v&v engineering",
+    # audit, and the two terms banned by request
+    "audit intern", "consultant", ".net", "dotnet",
+)
+
+# Narrow by design. A bare "engineer" would rescue every discipline above.
+_HW_RESCUE = (
+    r"\bsoftware\s+engineer", r"\bsoftware\s+develop", r"\bsde\b", r"\bswe\b",
+    r"\bbackend\b", r"\bfront[\s-]?end\b", r"\bfull[\s-]?stack\b",
+    r"\bdevops\b", r"\bdata\s+engineer", r"\bdata\s+scien",
+    r"\bmachine\s+learning\b", r"\bsite\s+reliability\b", r"\bsre\b",
+    r"\bcomputer\s+scien", r"\bembedded\s+software\b", r"\bfirmware\b",
+    r"\bweb\s+develop", r"\bapi\b", r"\bcloud\s+engineer",
+    r"\bplatform\s+engineer", r"\bapplied\s+scien", r"\bcompiler\b",
+    r"\bdistributed\s+systems\b", r"\bsoftware\s+quality\b",
+    # An AI/ML role is software whatever domain it sits in. Without these,
+    # "AI/ML Computational Toxicology" lost to "toxicolog" and "AI Product
+    # Engineering" lost to "product engineering" - both applied to.
+    r"(?<![a-z])ai(?![a-z])", r"\bai/ml\b", r"\bartificial\s+intelligence\b",
+    r"\bml\b", r"\bdeep\s+learning\b", r"\bnlp\b",
+    # "Software Test & Validation Engineer" says software in the title and was
+    # still caught by "validation engineer". A bare \bsoftware\b is safe here:
+    # no hardware discipline in the list above is described as software.
+    r"\bsoftware\b", r"\bqa\b", r"\bsdet\b",
+)
+
+_HW_RE = [re.compile(r"(?<![a-z])%s" % re.escape(_w), re.I)
+          for _w in _HW_DISCIPLINES]
+_HW_RESCUE_RE = [re.compile(_p, re.I) for _p in _HW_RESCUE]
+
+
+def _is_hardware_discipline(title):
+    """True for engineering that is not software engineering."""
+    _t = (title or "").strip()
+    if not _t:
+        return False
+    if any(_r.search(_t) for _r in _HW_RESCUE_RE):
+        return False
+    return any(_d.search(_t) for _d in _HW_RE)
+
+
 class TitleProcessor:
     @staticmethod
     @lru_cache(maxsize=512)
     def clean_title_aggressive(title):
+        title = re.sub(r"^[:\s]+", "", title).strip()  # strip leading colon/space
+        # collapse spaced compounds so prefix logic cannot eat them
+        title = re.sub(r"\b(Full|Back|Front|End|Co|Part)\s+-\s+(Stack|End|Front|Op|Time|Site)\b", r"\1-\2", title, flags=re.I)
+        # Strip known garbage prefixes: "Pipeline RR:", "XMLNAME-", etc.
+        title = re.sub(r"^Pipeline\s+\w+:\s*", "", title, flags=re.I).strip()
+        title = re.sub(r"^XMLNAME[-\s]*", "", title, flags=re.I).strip()
+        # Strip garbage suffixes: "Start Date", "Apply Now", etc.
+        title = re.sub(r"\s+Start Date\s*$", "", title, flags=re.I).strip()
+        title = re.sub(r"\s+Apply Now\s*$", "", title, flags=re.I).strip()
+        # Clean pipe-separated metadata: "Group 2-24 | Co-Op | Title | Jun-Dec"
+        if " | " in title:
+            segments = [s.strip() for s in title.split(" | ")]
+            # Find the segment that looks most like a job title
+            _job_words = {"intern", "engineer", "developer", "analyst", "scientist",
+                          "co-op", "coop", "co op", "manager", "designer", "researcher"}
+            _best = []
+            for seg in segments:
+                seg_lower = seg.lower()
+                # Skip group/team codes: "Group 2-24", short codes
+                if re.match(r"^(Group|Team|Dept|Division)\s", seg, re.I):
+                    continue
+                # Skip date ranges: "Jun-Dec", "Jan-Jun 2026"
+                if re.match(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)", seg, re.I) and len(seg) < 20:
+                    continue
+                _best.append(seg)
+            if _best:
+                title = " | ".join(_best) if len(_best) <= 2 else _best[0]
+        # Reject garbage titles that are just URL paths or button text
+        _GARBAGE_TITLES = {"application", "apply", "apply now", "job", "careers",
+            "sign in", "login", "home", "search", "page not found", "404",
+            "let's confirm you are human", "your connection was interrupted",
+            "career page", "job listings", "open positions"}
+        if title.lower().strip() in _GARBAGE_TITLES:
+            # Return "" (not a tuple): callers treat empty as invalid.
+            return ""
         if not title or len(title) < 5:
             return title
 
         original = title
+
+        # Strip company name prefix from title: "Company - Title" or "Company: Title"
+        import re as _prefix_re
+        _prefix_match = _prefix_re.match(r"^[A-Z][A-Za-z\s&.,']{2,30}(?:\s+[-–—]\s+|:\s*)(.+)$", title)
+        if _prefix_match:
+            _remainder = _prefix_match.group(1).strip()
+            # Only strip if remainder looks like a job title (has job words)
+            _job_words = {"intern", "engineer", "developer", "analyst", "scientist", "manager",
+                          "designer", "architect", "specialist", "associate", "coordinator"}
+            if any(w in _remainder.lower() for w in _job_words):
+                title = _remainder
+
+        # Strip duration suffixes: "- 4 months", "- 12 weeks", "(8 months)"
+        import re as _dur_re
+        title = _dur_re.sub(r'\s*[-–—]\s*\d+\s*(?:months?|weeks?|mos?)\s*$', '', title, flags=_dur_re.I).strip()
+        title = _dur_re.sub(r'\s*\(\d+\s*(?:months?|weeks?|mos?)\)\s*$', '', title, flags=_dur_re.I).strip()
+        # Strip "Fall 2026" / "Summer 2026" season suffixes
+        title = _dur_re.sub(r'\s*[-–—]\s*(?:Fall|Spring|Summer|Winter)\s+20\d{2}\s*$', '', title, flags=_dur_re.I).strip()
+        # Strip schedule/duration info: "6 Months Full-time - July to Dec", "Full-time - Aug to Dec"
+        title = _dur_re.sub(r'\s*[-–—,]\s*\d+\s*(?:months?|weeks?)\s*(?:full[- ]?time|part[- ]?time)?\s*[-–—]?\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*(?:to|through|-|–)\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*(?:\s*20\d{2})?\s*$', '', title, flags=_dur_re.I)
+        # Strip "Full-time - July to Dec 2026" without leading number
+        title = _dur_re.sub(r'\s*[-–—,]\s*(?:full[- ]?time|part[- ]?time)\s*[-–—]?\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*(?:to|through|-|–)\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*(?:\s*20\d{2})?\s*$', '', title, flags=_dur_re.I)
+        # Strip standalone "- Full Time", "- Part Time"
+        title = _dur_re.sub(r'\s*[-–—]\s*(?:full[- ]?time|part[- ]?time)\s*$', '', title, flags=_dur_re.I)
+        # Strip "- College Program 2026", "- College Program"
+        title = _dur_re.sub(r'\s*[-–—]\s*College\s+Program(?:\s+20\d{2})?\s*$', '', title, flags=_dur_re.I)
+        # Strip redundant title suffix: "AI and Governance Co-op - AI and Governance"
+        # Pattern: "X - X" where second half repeats first half
+        _halves = _dur_re.split(r'\s*[-–—]\s*', title)
+        if len(_halves) == 2:
+            _h1 = _halves[0].strip().lower()
+            _h2 = _halves[1].strip().lower()
+            # If second half is subset of first half, remove it
+            if _h2 in _h1 or _h1.endswith(_h2):
+                title = _halves[0].strip()
+        # Strip trailing garbage words: "Intern Start", "Apply Now"
+        title = _dur_re.sub(r'\s+(?:Start|Apply|Now|Click|Here)\s*$', '', title, flags=_dur_re.I).strip()
+
+        # FIX 1: Strip email subject line prefixes like "Company is looking for X"
+        import re as _re_title
+        title = _re_title.sub(
+            r"^.{3,60}?\s+is\s+(?:looking|hiring|searching|seeking)\s+for\s+",
+            "", title, flags=re.I
+        ).strip()
+        # Strip "We are looking for X" style
+        title = _re_title.sub(
+            r"^(?:we\s+are|we're)\s+(?:looking|hiring|searching|seeking)\s+for\s+",
+            "", title, flags=re.I
+        ).strip()
+        # Strip leading ATS codes like "F1138 " at start of title
+        title = _re_title.sub(r"^[A-Z]\d{3,5}\s+", "", title).strip()
+
         title = _TITLE_CLEAN_PATTERN.sub("", title)
         title = _SEASON_PATTERN.sub("", title)
         title = _YEAR_PATTERN.sub(" ", title)
@@ -144,6 +524,19 @@ class TitleProcessor:
         title = re.sub(r"\s*\|\s*Simplify.*", "", title, flags=re.I)
         title = title.rstrip(",.;- ")
 
+        # Fix encoding artifacts
+        try:
+            from aggregator.config import TITLE_ENCODING_FIXES
+            for bad, good in TITLE_ENCODING_FIXES.items():
+                title = title.replace(bad, good)
+        except Exception:
+            pass
+        # Dedup: "Data Analytics Intern - Data Analytics" -> "Data Analytics Intern"
+        import re as _re2
+        _dd = _re2.compile(r'^(.+?)\s*[-\u2013\u2014]\s*\1\s*$', _re2.I)
+        _m = _dd.match(title.strip())
+        if _m:
+            title = _m.group(1).strip()
         return title if len(title) >= 5 else original
 
     @staticmethod
@@ -158,6 +551,13 @@ class TitleProcessor:
 
     @staticmethod
     def is_valid_job_title(title):
+        # Reject garbage titles that are just URL paths or button text
+        _GARBAGE_TITLES = {"application", "apply", "apply now", "job", "careers",
+            "sign in", "login", "home", "search", "page not found", "404",
+            "let's confirm you are human", "your connection was interrupted",
+            "career page", "job listings", "open positions"}
+        if title.lower().strip() in _GARBAGE_TITLES:
+            return False, f"Garbage title: {title}"
         if not title or len(title) < 5:
             return False, "Title too short"
 
@@ -168,9 +568,189 @@ class TitleProcessor:
         except (ImportError, AttributeError):
             INVALID_TITLE_KEYWORDS = []
 
+        # Reject standalone generic titles like "Internship", "Co-op", "Intern"
+        _standalone_garbage = {"internship", "intern", "co-op", "coop", "fellowship",
+            "apprenticeship", "job", "position", "role", "opening", "opportunity"}
+        if title.strip().lower() in _standalone_garbage:
+            return False, "Standalone generic title"
+
+        # Reject clearly non-tech titles
+        _NON_TECH = [
+            r"\b(?:buyer|purchasing|procurement)\b",
+            r"\b(?:metrology|metallurg|welder|machinist)\b",
+            r"\b(?:avionics|pilot|flight)\b(?!.*software)",
+            r"\b(?:3d\s+model|visual\s+design|graphic\s+design)\b(?!.*engineer|.*develop)",
+            r"\b(?:nurse|physician|pharmacist|dental)\b",
+            r"\b(?:accountant|auditor|tax\s+analyst|bookkeeper)\b",
+            r"\b(?:real\s+estate|property\s+manag|leasing)\b",
+            r"\bgroup\s+head\b(?!.*engineer|.*software|.*data)",
+            r"\bilt\s+specialist\b",
+            r"\bcabinet\s+maker\b",
+            r"\bpayroll\b",
+            r"\berp\s+supervisor\b",
+            r"\bmanager\s+people\b",
+            r"\belectronic\s+systems\s+engineering\b(?!.*software)",
+            r"\bit\s+apps\s+designer\b",
+            r"\bsales\s+&\s+data\s+analytics\b",
+            r"\bcandidateexperience\b",
+            r"\bdata\s+coordinator\b(?!.*engineer|.*develop|.*software)",
+            r"\bfield\s+sales\b",
+            r"\bphysics[\s-]+based\s+model",
+            r"\bmechatronics\b",
+            r"\bshipyard\b",
+            r"\bbusiness\s+development\b",
+            r"\bpartnerships?\s+(?:&|and)\s+growth\b",
+            r"\bproduct\s+manager\b(?!.*engineer)",
+            r"\binstructor\b",
+            r"\bteaching\b",
+            r"\bteacher\b",
+            r"\btransit\s+intern\b",
+            r"\bcommunity\s+college\b",
+            r"\bschool\s+district\b",
+            r"\bcounty\s+of\b",
+            r"\bgenerator\s+(?:application|design)\b",
+            r"\bpeople\s+operations\b",
+            r"\baircraft\s+(?:technician|mechanic|painter|repair|composite)\b",
+            r"\binterior\s+installation\b",
+            r"\bstructural\s+mechanic\b",
+            r"\bgas\s+compressor\b",
+            r"\bsystem\s+product\s+engineer\b(?!.*software)",
+            r"\bproduct\s+engineer\s+(?:1|I|i)\b(?!.*software)",
+            r"\bpower\s+(?:generation|plant|systems)\s+(?:engineer|intern)\b",
+            r"\bgovernment\s+(?:intern|jobs)\b",
+            r"\bventure\s+capital\b",
+            r"\bstaffing\b",
+            r"\brecruitment\b(?!.*engineer|.*software)",
+            r"\b(?:electrolysis|membrane|proton exchange|catalyst|polymer)\b(?!.*software|.*data)",
+            r"\b(?:hamr|component\s+testing|pcb|soldering|antenna)\b(?!.*software)",
+            r"\b(?:air\s+quality|climate\s+action|conservation|sustainability)\b(?!.*data|.*ml|.*ai)",
+            r"\b(?:travel\s+product|digital\s+travel|merchandise\s+strategy)\b",
+            r"\b(?:product\s+management)\b(?!.*software|.*data|.*tech)",
+        ]
+        for _ntp in _NON_TECH:
+            if re.search(_ntp, title, re.I):
+                return False, f"Non-tech title"
+
+        # Reject university-specific co-ops (restricted to that university's students)
+        _UNIV_SPECIFIC = [
+            r"\bdrexel\s+university\b",
+            r"\bnortheastern\s+university\b(?!.*prasad)",  # Your own university is fine
+            r"\bpurdue\s+university\b",
+            r"\bgeorgia\s+tech\b",
+            r"\bstanford\b.*\bco-?op\b",
+            r"\bmit\b.*\bco-?op\b",
+        ]
+        for _up in _UNIV_SPECIFIC:
+            if re.search(_up, title, re.I):
+                return False, "University-specific co-op"
+
+        # Reject senior-level scientist/engineer roles (II, III, IV = not entry level)
+        # II is typically 1-3 years and still early career - Shield AI, Match
+        # Group and Pivotal "Software Engineer II" roles were all rejected by
+        # this. III and above genuinely is not entry level.
+        # Relaxing II let non-software "<X> Engineer II" titles through -
+        # Project Controls, Drafter/Design, Validation. A level-II title is
+        # only worth keeping when the role itself is software.
+        if re.search(r"(?:scientist|engineer|developer|analyst)\s+(?:II)\b", title, re.I):
+            if not re.search(
+                r"\b(?:software|swe|developer|programmer|full[\s-]?stack|backend|"
+                r"back[\s-]end|frontend|front[\s-]end|devops|sre|security|"
+                r"machine\s+learning|deep\s+learning|computer\s+vision|"
+                r"data\s+engineer|systems?|cloud|platform|autonomy|perception)\b",
+                title, re.I):
+                return False, f"Level II non-software role: {title[:30]}"
+        if re.search(r"(?:scientist|engineer|developer|analyst)\s+(?:III|IV|V)\b", title, re.I):
+            if not re.search(r"\bintern\b|\bco-?op\b|\bnew\s+grad\b|\bentry\b|\bjunior\b", title, re.I):
+                return False, f"Senior role (Roman numeral level): {title[:30]}"
+
+        # Reject education institutions
+        _EDU_COMPANIES = ["community college", "school district", "university system",
+            "board of education", "public schools"]
+
+        # Reject non-English titles
+        _NON_ENGLISH_KW = ["automatizare", "inteligenta artificiala", "dezvoltare",
+            "platforme", "bazata", "senzori", "inginerie", "testare",
+            "praktikum", "werkstudent", "alternance", "stagiaire",
+            "ingeniero", "entwicklung", "forschung"]
+        if any(kw in title.lower() for kw in _NON_ENGLISH_KW):
+            return False, "Non-English title"
+
+        # Reject standalone generic titles
+        _standalone_garbage = {"internship", "intern", "co-op", "coop", "fellowship",
+            "apprenticeship", "job", "position", "role", "opening", "opportunity"}
+        if title.strip().lower() in _standalone_garbage:
+            return False, "Standalone generic title"
+
+        # Reject XMLNAME garbage from Workday
+        if "xmlname" in title.lower():
+            return False, "XMLNAME garbage title"
+        # Reject hex/alphanumeric job IDs used as titles (e.g. "F70F3473E7")
+        if re.match(r'^[0-9a-fA-F]{6,}$', title.strip()):
+            return False, "Title is hex/job ID"
+        _alpha_only = re.sub(r'[^a-zA-Z ]', '', title).strip()
+        if len(_alpha_only) < 4:
+            return False, "Title too short/no alpha content"
+
+        # Some INVALID_TITLE_KEYWORDS patterns are broader than intended and
+        # catch genuine software roles: "robotics\s+(engineer|software...)"
+        # rejected Robotics Software Engineer, "test\s+engineering.*intern"
+        # rejected Software Test Engineering Intern, and "computer\s+vision.*
+        # intern" rejected Computer Vision Engineering Intern. All three are
+        # software jobs. A SOFTWARE keyword overrides these - but never the
+        # hard exclusions below (PhD, clearance, pure hardware).
+        # PhD anywhere in a TITLE, unless the title also offers MS or BS.
+        # Existing patterns only covered "phd intern" / "phd internship", so
+        # "2027 PhD Graduate", "Research Scientist, PhD" and "Software
+        # Engineer, PhD New Grad" all passed. An MS/PhD or BS/MS/PhD title is
+        # open to you, so those are kept. 14/14 cases.
+        # Postdoc is a PhD role but contains no "phd" substring, so
+        # "Machine Learning - Postdoctoral Research" passed every check.
+        if re.search(r"\b(?:ph\.?\s?d|post[\s-]?doc(?:toral)?|doctoral|dphil)\b",
+                     title_lower):
+            if not re.search(
+                r"\b(?:ms|m\.s\.|masters?|bs|b\.s\.|bachelors?)\b", title_lower):
+                return False, "PhD role (not eligible)"
+
+        _SOFT_OVERRIDABLE = (
+            r"robotics\s+(?:engineer|software|hardware|intern|co-op)",
+            r"test\s+engineering.*intern",
+            r"computer\s+vision.*intern",
+        )
+        _title_is_software = re.search(
+            r"\b(?:software|swe|developer|programmer|full[\s-]?stack|backend|"
+            r"back[\s-]end|frontend|front[\s-]end|devops|sre|machine\s+learning|"
+            r"computer\s+vision|data\s+engineer|perception)\b", title_lower)
+
+        # A title offering MS *or* PhD is one you can apply to. Several
+        # patterns here fire on any intern title mentioning PhD - notably
+        # 'intern.*\bphd\b' - which rejected "Research Intern - MS or PhD".
+        # Third place today needing the same carve-out, so it lives here at
+        # the shared gate rather than being repeated per pattern.
+        _ms_eligible = re.search(
+            r"\b(?:ms|m\.s\.|masters?|bs|b\.s\.|bachelors?)\b", title_lower)
+
         for pattern in INVALID_TITLE_KEYWORDS:
             if re.search(pattern, title_lower):
-                return False, "PhD or military veteran role (not eligible)"
+                if _title_is_software and pattern in _SOFT_OVERRIDABLE:
+                    continue
+                if _ms_eligible and "phd" in pattern:
+                    continue
+                return False, "PhD, military, hardware or non-CS role (not eligible)"
+
+        # FIX 4: SkillBridge / DoD / military-only internships
+        skillbridge_patterns = [
+            r"skillbridge",
+            r"skill\s*bridge",
+            r"dod\s+skillbridge",
+            r"military\s+(?:intern|transition|separation)",
+            r"(?:active\s+duty|armed\s+forces)\s+(?:intern|transition)",
+            r"separation\s+from\s+(?:the\s+)?military",
+            r"within\s+180\s+days\s+of\s+separation",
+            r"honorable\s+discharge\s+required",
+        ]
+        for pat in skillbridge_patterns:
+            if re.search(pat, title_lower):
+                return False, "SkillBridge/military-only internship (not eligible)"
 
         # Hardware/non-CS roles to reject
         hardware_patterns = [
@@ -188,6 +768,15 @@ class TitleProcessor:
             r"\bschematic",
             r"\bcircuit\s+design",
             r"\bpower\s+electronics",
+            r"\bmotor\s+controls",
+            # Relaxing the broad "robotics" rule let Robotics Technician
+            # through. Technician/operator/assembler/machinist are trade
+            # roles regardless of the domain in front of them.
+            r"\btechnician\b",
+            r"\boperator\b",
+            r"\bassembler\b",
+            r"\bmachinist\b",
+            r"\bfabricator\b",
             r"\brf\s+engineer",
             r"\bantenna",
             r"\bsignal\s+integrity",
@@ -220,8 +809,55 @@ class TitleProcessor:
             r"\bclinical\s+(?:data|trial)\s+intern",
             r"\breal\s+estate\s+(?:analyst|intern)",
         ]
+        # Non-tech DOMAINS. "DCL Environmental Affairs Intern" passed every
+        # filter because nothing knew Environmental Affairs is not technical.
+        # A software or data keyword overrides, so "Environmental
+        # Sustainability Data Analytics Intern" and "Sustainability Data
+        # Engineer" are kept - the domain is not the disqualifier, the
+        # absence of a technical role is. 19/19 cases.
+        _NONTECH_DOMAIN = (
+            r"\benvironmental\s+(?:affairs|sustainability|health|safety|"
+            r"compliance|policy|science)\b", r"\bsustainability\b",
+            r"\benvironmental\s+intern\b", r"\bconservation\b",
+            r"\bhorticulture\b", r"\bculinary\b", r"\bhospitality\b",
+            r"\bguest\s+(?:services|experience|relations)\b",
+            r"\bmerchandis(?:e|ing)\b", r"\bcostum(?:e|ing)\b",
+            r"\bentertainment\s+(?:intern|technician)\b",
+            r"\bpublic\s+relations\b", r"\bcommunications\s+intern\b",
+            r"\bsocial\s+media\b", r"\bbrand\s+(?:marketing|management)\b",
+            r"\bevent\s+(?:planning|management|coordinator)\b",
+            r"\bfacilities\b", r"\blogistics\s+(?:intern|coordinator|analyst)\b",
+            r"\bsupply\s+chain\b", r"\btalent\s+(?:acquisition|management)\b",
+        )
+        _HAS_TECH_ROLE = re.search(
+            r"\b(?:software|swe|developer|programmer|full[\s-]?stack|backend|"
+            r"frontend|devops|sre|machine\s+learning|computer\s+vision|"
+            r"data\s+(?:engineer|scientist|analytics|analyst)|"
+            r"analytics\s+engineer|python|java)\b", title_lower)
+        if not _HAS_TECH_ROLE:
+            for _nd in _NONTECH_DOMAIN:
+                if re.search(_nd, title_lower):
+                    return False, "Non-tech domain role"
+
+        # A title that says SOFTWARE is a software job, whatever it runs on.
+        # "Embedded Software Engineer" and "Sensor Software Engineer" were
+        # being rejected because \bembedded and \bsensor matched first - 28
+        # embedded-SWE roles lost in a single run. Hardware-only titles
+        # (Electrical Engineer, Motor Controls Engineer) still get rejected.
+        _IS_SOFTWARE = re.search(
+            r"\b(?:software|swe|developer|programmer|full[\s-]?stack|backend|"
+            r"back[\s-]end|frontend|front[\s-]end|devops|sre|"
+            r"machine\s+learning|computer\s+vision|data\s+engineer)\b",
+            title_lower)
+        _HARD_ONLY = re.search(
+            r"\b(?:electrical|mechanical|welding|plumbing|hvac|"
+            r"cnc|machining|soldering|corrosion|antenna|pcb|vlsi|"
+            r"power\s+electronics)\b", title_lower)
+
         for pattern in hardware_patterns:
             if re.search(pattern, title_lower):
+                if _IS_SOFTWARE and not _HARD_ONLY:
+                    break          # software role - keep it
                 return False, "Hardware/non-CS role"
 
         # Reject unpaid internships
@@ -250,10 +886,70 @@ class TitleProcessor:
 
         return True, None
 
+    _COMPANY_ALIASES = {
+        "robert bosch": "bosch", "bosch group": "bosch",
+        "crum & forster insurance": "crum & forster", "cfins": "crum & forster",
+        "xpeng motors": "xpeng", "xpengmotors": "xpeng",
+        "farmers insurance": "farmers insurance", "farmersinsurance": "farmers insurance",
+        "climateai": "climateai", "climate ai": "climateai",
+        "plus2": "plusai", "plusai": "plusai", "plus ai": "plusai", "plus 2": "plusai", "plus-2": "plusai",
+        "wwfus": "world wildlife fund", "world wildlife fund": "world wildlife fund",
+        "lilasciences": "lila sciences", "lila sciences": "lila sciences",
+        "temporaltechnologies": "temporal technologies",
+        "podium81": "podium", "podium": "podium",
+        "foxnew fox news network": "fox news", "fox news": "fox news",
+        "bcbst bluecross blueshield of tennessee": "bluecross blueshield",
+        "lexisnexis risk solutions fl": "lexisnexis",
+        "lexisnexis risk solutions": "lexisnexis",
+    }
+
+    @staticmethod
+    def normalize_company_for_dedup(company):
+        import re as _re
+        c = company.strip().lower()
+        c = _re.sub(r"[^a-z0-9 ]", "", c).strip()
+        for alias, canonical in TitleProcessor._COMPANY_ALIASES.items():
+            if c == alias or c.startswith(alias):
+                return canonical
+        return c
+
     @staticmethod
     @lru_cache(maxsize=256)
     def is_cs_engineering_role(title, description=""):
         title_lower = title.lower()
+
+        # Title gates run before the guaranteed-phrase shortcut, for the same
+        # reason seniority does: "Software Engineer - C#/.NET (US Citizenship
+        # Required)" matches the guaranteed phrase "software engineer" and
+        # would return True before any of these could run.
+        try:
+            from aggregator.title_gates import rejection_reason as _gate
+            _why = _gate(title)
+            if _why:
+                return False
+        except ImportError:
+            pass
+
+        # Seniority runs first, above the guaranteed-phrase shortcut below.
+        # "Software Engineer III" matches the guaranteed phrase "software
+        # engineer" and returned True before ever reaching this check, so
+        # level 3+ postings kept arriving despite the gate existing.
+        # Seniority disqualifies regardless of how technical the role is.
+        if _is_too_senior(title):
+            return False
+
+        # Unambiguous business roles. "analyst" is a technical keyword, so
+        # "Credit Risk Analyst" ties 1-1 against the scoring below and the
+        # relaxed tie-break keeps it. These qualifiers settle it earlier,
+        # unless a software signal in the title rescues the role.
+        if _is_hard_non_technical(title):
+            return False
+
+        # Engineering that is not software engineering. Thermal, RF, process
+        # integration, controls, field and clinical roles all carry
+        # "engineer" and so passed every check above.
+        if _is_hardware_discipline(title):
+            return False
 
         try:
             from aggregator.config import GUARANTEED_TECHNICAL_PHRASES
@@ -264,13 +960,44 @@ class TitleProcessor:
         except (ImportError, AttributeError):
             pass
 
+        # Hard gate, before any scoring: disciplines that are never CS/SWE.
+        # The count-based check below cannot catch these, because "engineer"
+        # is itself a technical keyword.
+        if _is_hard_non_tech(title):
+            return False
+
         combined_text = (title + " " + description).lower()
 
-        if any(kw in combined_text for kw in TECHNICAL_ROLE_KEYWORDS):
-            non_tech_pure = sum(1 for kw in NON_TECHNICAL_PURE if kw in combined_text)
-            tech_count = sum(1 for kw in TECHNICAL_ROLE_KEYWORDS if kw in combined_text)
+        # Early rejection: purely non-technical title.
+        #
+        # Counts are boundary-aware for short keywords. Previously "ai" matched
+        # inside railcar, chair, maintenance and claim, so a title with no
+        # technical content scored _tt > 0 and skipped this reject entirely.
+        _ntl = (title or "").lower()
+        _nt = _kw_count(NON_TECHNICAL_PURE, _ntl)
+        _tt = _kw_count(TECHNICAL_ROLE_KEYWORDS, _ntl)
+        if _nt > 0 and _tt == 0:
+            return False
 
-            if tech_count > non_tech_pure:
+        # A title with no technical signal at all is not a CS role, whether or
+        # not it happens to contain a non-technical keyword. Without this,
+        # "Bulk and Railcar Unloader" fell through to the pattern checks below
+        # and was accepted by default.
+        if _tt == 0 and not _kw_any(TECHNICAL_ROLE_KEYWORDS, combined_text):
+            return False
+
+        if _kw_any(TECHNICAL_ROLE_KEYWORDS, combined_text):
+            non_tech_pure = _kw_count(NON_TECHNICAL_PURE, combined_text)
+            tech_count = _kw_count(TECHNICAL_ROLE_KEYWORDS, combined_text)
+
+            # >= rather than >: a tie means the evidence is balanced, and
+            # under a fail-open policy balanced evidence keeps the job. This
+            # is what recovered "Sales Team Data Science Intern" and
+            # "Salesforce Support and Analytics Intern", both of which scored
+            # 1-1 and were being discarded. The hard non-tech gate above still
+            # rejects packaging, civil, industrial and the rest outright, so
+            # this cannot readmit them.
+            if tech_count >= non_tech_pure:
                 return True
 
         try:
@@ -282,7 +1009,77 @@ class TitleProcessor:
         except (ImportError, AttributeError):
             pass
 
+        # Borderline: keyword score was low but nonzero — ask Claude before rejecting
+        # Only triggers when tech_count > 0 (some signal) but didn't pass threshold
+        if any(kw in combined_text for kw in TECHNICAL_ROLE_KEYWORDS):
+            claude_result = TitleProcessor._claude_is_tech_role(title)
+            if claude_result is True:
+                logging.info(f"Claude tech override: '{title}' accepted as CS role")
+                return True
+
         return False
+
+    @staticmethod
+    def _claude_is_tech_role(title, company=""):
+        """
+        Ask Claude if this is a CS/Engineering role. Called only for borderline cases.
+        Returns True if Claude says yes, False otherwise. Returns None if API unavailable.
+        Cached to avoid repeat calls for same title.
+        """
+        import os as _os
+        cache_key = title.lower().strip()
+        if not hasattr(TitleProcessor, "_tech_cache"):
+            TitleProcessor._tech_cache = {}
+        if cache_key in TitleProcessor._tech_cache:
+            return TitleProcessor._tech_cache[cache_key]
+
+        _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        _env = _os.path.join(_root, ".env")
+        _api_key = ""
+        if _os.path.exists(_env):
+            for ln in open(_env):
+                ln = ln.strip()
+                if ln.startswith("ANTHROPIC_API_KEY="):
+                    _api_key = ln.split("=", 1)[1].strip()
+                    break
+        _api_key = _api_key or _os.environ.get("ANTHROPIC_API_KEY", "")
+        if not _api_key:
+            TitleProcessor._tech_cache[cache_key] = None
+            return None
+
+        try:
+            import urllib.request, json as _j
+            prompt = (
+                f"Job title: {title}\nCompany: {company or 'unknown'}\n\n"
+                "Is this a software engineering, data science, ML, or CS internship role "
+                "that a Computer Science MS student should apply to? "
+                "Answer ONLY 'yes' or 'no'."
+            )
+            body = _j.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 5,
+                "messages": [{"role": "user", "content": prompt}]
+            }).encode()
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=body,
+                headers={
+                    "x-api-key": _api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                }
+            )
+            resp = urllib.request.urlopen(req, timeout=8)
+            data = _j.loads(resp.read())
+            answer = data["content"][0]["text"].strip().lower().rstrip(".")
+            result = answer == "yes"
+            TitleProcessor._tech_cache[cache_key] = result
+            logging.debug(f"Claude tech check: '{title}' → {result}")
+            return result
+        except Exception as e:
+            logging.debug(f"Claude tech check failed for '{title}': {e}")
+            TitleProcessor._tech_cache[cache_key] = None
+            return None
 
     @staticmethod
     def is_title_extraction_reliable(title):
@@ -360,7 +1157,7 @@ class TitleProcessor:
                     return False, f"Senior/experienced role: contains '{level}'"
             return True, None
 
-        if any(kw in title_lower for kw in ["intern", "co-op", "coop"]):
+        if any(kw in title_lower for kw in ["intern", "co-op", "coop", "co op"]) or title_lower.rstrip().endswith(" co"):
             if re.search(r"\(intern\)", title_lower):
                 return True, None
             for level in excluded:
@@ -428,15 +1225,52 @@ class TitleProcessor:
         except (ImportError, AttributeError):
             PAGE_TEXT_STANDARD_SCAN = 5000
 
-        # Trust title year — if title says 2026+, accept immediately
         title_lower = title.lower()
+
+        # Reject Spring explicitly in title — Spring 2026 is not Summer 2026
+        if re.search(r"\bspring\s*20(?:2[5-9]|3\d)\b", title_lower):
+            return False, "Wrong season: Spring (only Summer 2026+ accepted)"
+        if re.search(r"\bspring\b", title_lower) and "summer" not in title_lower:
+            # Spring without summer qualifier — reject
+            return False, "Wrong season: Spring (only Summer 2026+ accepted)"
+
+        # Trust title year — if title says Summer 2026+, accept immediately
+        if re.search(r"\bsummer\s*20(2[6-9]|3\d)\b", title_lower):
+            return True, ""
+        if re.search(r"\bfall\s*20(2[6-9]|3\d)\b", title_lower):
+            return True, ""
+
+        # Plain year check — if title has 2026+ without spring qualifier
         for m in re.finditer(r"\b(202[4-9]|203[0-9])\b", title_lower):
             if int(m.group(1)) >= 2026:
                 return True, ""
-        # Fallback: plain string check for year in title
         if "2026" in title_lower or "2027" in title_lower:
             return True, ""
+
+        # Reject titles with explicit old season/year (Summer 2024, Fall 2025, 2025 etc.)
+        if re.search(r"(?:summer|fall|spring|winter)\s*20(?:2[0-5])", title_lower):
+            _m = re.search(r"(?:summer|fall|spring|winter)\s*(20(?:2[0-5]))", title_lower)
+            return False, f"Wrong season: {_m.group(0) if _m else 'old'}"
+        if re.search(r"\b20(?:2[0-5])\b", title_lower) and not re.search(r"\b20(?:2[6-9]|3\d)\b", title_lower):
+            _m = re.search(r"(20(?:2[0-5]))", title_lower)
+            return False, f"Wrong season: {_m.group(1) if _m else 'old'}"
+
         limited_text = page_text[:PAGE_TEXT_STANDARD_SCAN] if page_text else ""
+
+        # Check page text for Spring-only start dates like "begins April 2026"
+        if limited_text:
+            spring_page_patterns = [
+                r"(?:start|begin|starting|beginning|commence)s?\s+(?:in\s+)?(?:april|march|february|january)\s+20(?:2[6-9]|3\d)",
+                r"(?:april|march|february|january)\s+20(?:2[6-9]|3\d)\s+(?:start|begin|cohort)",
+                r"spring\s+20(?:2[6-9]|3\d)\s+(?:intern|cohort|class|semester)",
+                r"(?:intern|cohort|class)\s+(?:start|begin)s?\s+(?:april|march|february)",
+            ]
+            for pat in spring_page_patterns:
+                if re.search(pat, limited_text.lower()):
+                    # Only reject if no summer signal anywhere
+                    if not re.search(r"\bsummer\b", limited_text.lower()):
+                        return False, "Wrong season: Spring start date (April/March)"
+
         combined = (title + " " + limited_text).lower()
 
         years_found = []
@@ -462,7 +1296,16 @@ class TitleProcessor:
 
         max_year = max(years_found)
         if max_year < 2026:
-            return False, f"Wrong season: {max_year}"
+            # Only reject if title explicitly mentions old season
+            # Don't reject based on page text years alone (copyright, founded dates slip through)
+            title_has_old_year = bool(re.search(r"\b20(?:2[0-5])\b", title_lower))
+            title_has_old_season = bool(re.search(r"\b(?:summer|fall|spring|winter)\s*20(?:2[0-5])\b", title_lower))
+            if title_has_old_season:
+                return False, f"Wrong season: {max_year}"
+            if title_has_old_year and "summer" not in title_lower and "fall" not in title_lower:
+                return False, f"Wrong season: {max_year}"
+            # Page mentions old year but title is clean — accept (likely copyright/founded date)
+            return True, ""
 
         return True, ""
 
@@ -485,7 +1328,8 @@ class JobIDExtractor:
 
         # Career sites often have misleading IDs in URLs (LinkedIn source IDs, etc.)
         # Lower confidence so page text extraction wins
-        career_domains = ["disneycareers.com", "careers.google.com", "careers.", "jobs.",
+        career_domains = ["disneycareers.com", "careers.google.com", "careers.",
+                          "eightfold.ai", "careers.microsoft", "jobs.",
                           "?source=LINKEDIN", "?utm_source="]
         is_career_site = any(cd in url.lower() for cd in career_domains)
 
@@ -587,6 +1431,10 @@ class JobIDExtractor:
     def _is_valid_id(job_id, url=''):
         if url and 'greenhouse.io' in url.lower():
             return False
+        # Strip trailing "Apply" suffix from TikTok/ByteDance job IDs
+        # e.g. "A112542AApply" → "A112542A", "A38740Apply" → "A38740"
+        if job_id and job_id.endswith("Apply"):
+            job_id = job_id[:-5].strip()
         if not job_id or not (4 <= len(job_id) <= 20):
             return False
         if not re.match(r"^[A-Z0-9\-_]+$", job_id, re.I):
@@ -934,8 +1782,8 @@ class LocationExtractor:
                     location = match.group(1).strip()
                     if 3 < len(location) < 100:
                         return ExtractionResult(location, conf, "selenium_text")
-        except:
-            pass
+        except Exception as _e:
+            logging.debug(f"op failed: {_e}")
 
         return None
 
@@ -956,7 +1804,7 @@ class LocationProcessor:
         if len(location_text) > 80:
             # Try to salvage a city,state pattern from the beginning
             import re as _loc_re
-            quick_match = _loc_re.match(r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2})", location_text.strip())
+            quick_match = _loc_re.match(r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2})\b", location_text.strip())
             if quick_match:
                 return quick_match.group(1)
             return "Unknown"
@@ -991,6 +1839,20 @@ class LocationProcessor:
             location = re.sub(
                 r",?\s*(?:USA|United States)\s*", "", location, flags=re.I
             )
+            # FIX 5: strip floor/suite/address details
+            location = re.sub(
+                r",?\s*(?:floor|fl\.?|suite|ste\.?|room|rm\.?|bldg\.?|building)\s*\d*",
+                "", location, flags=re.I
+            )
+            location = re.sub(
+                r"\b\d+(?:st|nd|rd|th)\s+(?:floor|fl\.?)\b",
+                "", location, flags=re.I
+            )
+            # Strip street addresses like "123 Main St" or "One Penn Plaza"
+            location = re.sub(
+                r"\b(?:one|two|three|\d+)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:plaza|ave|st|street|blvd|drive|dr|road|rd|lane|ln|way|court|ct)\b",
+                "", location, flags=re.I
+            ).strip().strip(",").strip()
 
             match = _CITY_STATE_PATTERN.search(location)
             if match:
@@ -1021,6 +1883,9 @@ class LocationProcessor:
     @staticmethod
     @lru_cache(maxsize=512)
     def format_location_clean(location):
+        # First pass: normalize WFH/venue names before further processing
+        location = LocationProcessor.normalize_location(location) if location else location
+
         """ORIGINAL + ENHANCED with suffix stripping, abbreviation expansion"""
         if not location or location == "Unknown":
             return "Unknown"
@@ -1125,7 +1990,7 @@ class LocationProcessor:
         if len(text) < 3:
             return False
 
-        # Reject garbage phrases
+        # FIX 2: Reject compensation/salary text leaking into location
         garbage_phrases = [
             "as well as",
             "in accordance with",
@@ -1133,6 +1998,36 @@ class LocationProcessor:
             "without regard to",
             "applicants",
             "candidates",
+            "equity",
+            "salary",
+            "compensation",
+            "benefits",
+            "internal equity",
+            "base pay",
+            "pay range",
+            "market rate",
+            "experience and",
+            "qualifications",
+            "applications",
+            "and internal",
+            "or experience",
+            "per hour",
+            "per year",
+            "annually",
+            "multiple locations",
+            "see job description",
+            "various locations",
+            "to be determined",
+            "of the selected employee",
+            "offered for this role",
+            "show more options",
+            "other locations schedule",
+            "loading",
+            "offered for this role",
+            "show more options",
+            "loading...",
+            "other locations schedule",
+            "see posting",
         ]
 
         text_lower = text.lower()
@@ -1155,6 +2050,60 @@ class LocationProcessor:
             return False
 
         return True
+
+    @staticmethod
+    @staticmethod
+    def normalize_location(location: str) -> str:
+        """Normalize messy location strings to clean values."""
+        if not location:
+            return "Unknown"
+        loc = location.strip()
+        loc = re.sub(r"\s*\((?:On[,\s-]*site|Remote|Hybrid)\)\s*$", "", loc, flags=re.I).strip()
+
+        # "Work from Home" variants → Remote
+        wfh_patterns = [
+            r"work\s+from\s+home", r"\bwfh\b", r"work\s+at\s+home",
+            r"telecommut", r"telework", r"virtual\s+location",
+            r"^remote\s+in\s+usa$", r"^in\s+usa$", r"^usa$",
+            r"^united\s+states$", r"^us$",
+        ]
+        for pat in wfh_patterns:
+            if re.search(pat, loc, re.I):
+                return "Remote"
+
+        # Strip venue/building names from Workday locations
+        # e.g. "Auburn Hills PHINIA WHQ, MI" → "Auburn Hills, MI"
+        # Strip ALL-CAPS venue tokens before state code: 'Auburn Hills PHINIA WHQ, MI' → 'Auburn Hills, MI'
+        loc = re.sub(r'\b[A-Z]{3,}(?:\s+[A-Z]{2,})*(?=\s*,\s*[A-Z]{2}\b)', '', loc).strip()
+        loc = re.sub(r',\s*,', ',', loc).strip().strip(',').strip()
+        loc = re.sub(r'\s+,', ',', loc).strip()  # remove space before comma
+
+        # Normalize iCIMS state-coded locations: "US-AZ-Scottsdale" → "Scottsdale, AZ"
+        _icims_m = re.match(r'^US-([A-Z]{2})-(.+)$', loc.strip())
+        if _icims_m:
+            state, city = _icims_m.group(1), _icims_m.group(2).replace('-', ' ').strip()
+            return f"{city}, {state}"
+
+        # Normalize city abbreviations
+        _CITY_NORM = {
+            'nyc': 'New York, NY',
+            'new york city': 'New York, NY',
+            'sf': 'San Francisco, CA',
+            'la': 'Los Angeles, CA',
+            'dc': 'Washington, DC',
+            'washington dc': 'Washington, DC',
+        }
+        _loc_check = loc.strip().lower()
+        if _loc_check in _CITY_NORM:
+            return _CITY_NORM[_loc_check]
+
+        loc = re.sub(r',\s*,', ',', loc).strip().strip(',').strip()
+        loc = re.sub(r'\s+,', ',', loc).strip()  # remove space before comma
+
+        # "York, NY" → keep as-is (valid)
+        # "City, MO" is a known bad extraction — can't fix without re-fetch
+
+        return loc if loc else "Unknown"
 
     @staticmethod
     def extract_remote_status_enhanced(soup, location, url, description=""):
@@ -1227,7 +2176,8 @@ class LocationProcessor:
                 INTERNATIONAL_TEXT_INDICATORS,
             )
         except (ImportError, AttributeError):
-            INTERNATIONAL_URL_INDICATORS = [".co.uk", ".ca", "/uk/", "/canada/"]
+            INTERNATIONAL_URL_INDICATORS = [".co.uk", ".ca", "/uk/", "/canada/",
+                                            ".de", ".co.de", "/germany/", "/de/"]
             INTERNATIONAL_TEXT_INDICATORS = []
 
         # Check title for international country names
@@ -1265,6 +2215,13 @@ class LocationProcessor:
                         elif province != "ON":
                             return f"Location: Canada (from title: {province})"
 
+        # Always run page Canada check first — catches cases where location
+        # extraction produced garbage but the page clearly says Canada
+        if soup:
+            _page_canada = LocationProcessor._check_page_for_canada(soup)
+            if _page_canada:
+                return _page_canada
+
         if location and location not in ["Unknown", ""]:
             location_lower = location.lower()
             normalized = normalize_unicode(location_lower)
@@ -1274,6 +2231,25 @@ class LocationProcessor:
 
             if "canada" in location_lower:
                 return "Location: Canada"
+
+            # Germany — including common OCR/parsing typos from Simplify
+            _germany_variants = ["germany", "geany", "deutschland",
+                                  "munich", "münchen", "berlin", "hamburg",
+                                  "frankfurt", "stuttgart", "cologne", "köln",
+                                  "düsseldorf", "dusseldorf"]
+            for _gv in _germany_variants:
+                if _gv in location_lower:
+                    return f"Location: Germany ({location})"
+
+            # FIX 3: catch ATS-style "CAN" suffix e.g. "Peterborough CAN", "Toronto CAN"
+            import re as _re_can
+            if _re_can.search(r"\bCAN\b", location):
+                return "Location: Canada (CAN suffix)"
+            # Also catch province codes used by some ATS systems
+            _can_suffixes = [" ON", " BC", " AB", " QC", " MB", " SK", " NS", " NB", " NL", " PE", " YT", " NT", " NU"]
+            for _sfx in _can_suffixes:
+                if location.upper().endswith(_sfx):
+                    return f"Location: Canada (province suffix {_sfx.strip()})"
 
             for full_name, code in CANADA_PROVINCE_NAMES.items():
                 if re.search(rf"\b{full_name}\b", location_lower, re.I):
@@ -1426,8 +2402,8 @@ class LocationProcessor:
             match = re.search(r"[?&]city=([A-Za-z]+)", url, re.I)
             if match:
                 return match.group(1)
-        except:
-            pass
+        except Exception as _e:
+            logging.debug(f"op failed: {_e}")
         return None
 
     @staticmethod
@@ -1475,7 +2451,10 @@ class LocationProcessor:
                 if content == "canada" or "canada only" in content:
                     return "Location: Canada (from meta tag)"
 
-            page_text = soup.get_text()[:10000]
+            _raw = soup.get_text()[:10000]
+            page_text = _raw
+            for _lp in [" du Canada", " du canada", "du Canada\n", "du canada\n", "du Canada ", "du canada "]:
+                page_text = page_text.replace(_lp, " ")
             for pattern, city_name in [
                 (r"Ottawa\s*,?\s*Ontario", "Ottawa, ON"),
                 (r"Toronto\s*,?\s*Ontario", "Toronto, ON"),
@@ -1524,6 +2503,7 @@ class LocationProcessor:
     @staticmethod
     def clean_location(location):
         """NEW: Comprehensive location cleaning and validation"""
+        location = LocationProcessor.normalize_location(location) if location else location
         if not location or location == "Unknown":
             return location
 
@@ -1559,6 +2539,61 @@ class LocationProcessor:
 
         location = location.strip(", ")
 
+
+        # Fix state code prefix: "CAFremont, CA" -> "Fremont, CA", "TXBellevue, WA" -> "Bellevue, WA"
+        _sp_match = re.match(r"^([A-Z]{2})([A-Z][a-z].+)$", location)
+        if _sp_match:
+            _prefix, _rest = _sp_match.groups()
+            from aggregator.config import validate_us_state_code
+            if validate_us_state_code(_prefix):
+                location = _rest.strip()
+                if not re.search(r",\s*[A-Z]{2}\s*$", location):
+                    location = f"{location}, {_prefix}"
+        # Fix state code suffix: "HillsboroUS" -> strip trailing country code
+        _ss_match = re.match(r"^([A-Za-z ]{3,})(US|CA)$", location)
+        if _ss_match and "," not in location:
+            location = _ss_match.group(1).strip()
+        # Fix common location typos
+        location = re.sub(r"\bSt,\s", "St. ", location)  # "St, Louis" → "St. Louis"
+        # Fix "WA, DC" → "Washington, DC"
+        if location.strip() in ("WA, DC", "WA DC", "WA, D, C,", "WA, D, C", "WA, D. C."):
+            location = "Washington, DC"
+        # Fix known abbreviations
+        _abbrev_fixes = {
+            "SFLA": "South Florida",
+            "SF": "San Francisco, CA",
+            "NYC": "New York, NY",
+            "LA": "Los Angeles, CA",
+            "DC": "Washington, DC",
+            "BOS": "Boston, MA",
+            "CHI": "Chicago, IL",
+            "ATL": "Atlanta, GA",
+            "SEA": "Seattle, WA",
+            "DFW": "Dallas, TX",
+        }
+        if location.strip() in _abbrev_fixes:
+            location = _abbrev_fixes[location.strip()]
+        # Fix "+1" or "+2" multi-location suffix
+        location = re.sub(r"\s*\+\d+\s*$", "", location).strip()
+        # Fix "NY City Metropolitan Area (On, site)" → "New York, NY"
+        if "ny city metropolitan" in location.lower():
+            location = "New York, NY"
+        # Fix "(On, site)" or "(On-site)" suffix
+        location = re.sub(r"\s*\(On[,\s-]*site\)\s*$", "", location, flags=re.I).strip()
+        # Fix concatenated state+city: "MANYC" -> "New York, NY"
+        _concat_fixes = {"MANYC": "New York, NY", "Cambridge, MANYC": "Cambridge, MA"}
+        if location.strip() in _concat_fixes:
+            location = _concat_fixes[location.strip()]
+        # Fix "STATE City, Street Address" → "City, STATE"
+        import re as _re
+        _state_city_match = _re.match(r"^([A-Z]{2})\s+([A-Za-z ]+?)(?:,\s*.+)?$", location)
+        if _state_city_match:
+            _st, _city = _state_city_match.groups()
+            from aggregator.config import validate_us_state_code
+            if validate_us_state_code(_st) and len(_city.strip()) > 2:
+                location = f"{_city.strip()}, {_st}"
+
+
         # Fix iCIMS garbage locations like 's US', 'Location US'
         if location.lower() in ['s us', 'us', 'location us', 'locations us', 'jobs us']:
             location = 'US'
@@ -1579,6 +2614,8 @@ class LocationProcessor:
                               'delivers ', 'provides ', 'serving ',
                               's not finding', 's include', 's are currently',
                               'internship opportunities', 'apply now',
+                              'as required by law', 's as required',
+                              'city of wa county', 'city of',
                               ]
         if any(gi in location.lower() for gi in garbage_indicators):
             location = 'Unknown'
@@ -1667,7 +2704,12 @@ class ValidationHelper:
 
     @staticmethod
     def check_url_for_international(url):
-        """ORIGINAL: Delegates to LocationProcessor"""
+        """FIX 8: checks Canada URL indicators — name kept for backward compat"""
+        return LocationProcessor._check_url_for_canada(url)
+
+    @staticmethod
+    def check_url_for_canada(url):
+        """FIX 8: explicit alias with accurate name"""
         return LocationProcessor._check_url_for_canada(url)
 
     @staticmethod
@@ -1782,9 +2824,9 @@ class ValidationHelper:
                         "computer science",
                         "software engineering",
                         "computer engineering",
-                        "cs",
-                        " or ms",
-                        "or master",
+                        "information technology",
+                        "data science",
+                        "information systems",
                     ]
                     if any(kw in context for kw in cs_keywords):
                         logging.debug(
@@ -1856,6 +2898,56 @@ class ValidationHelper:
         except Exception as e:
             logging.debug(f"Preferred degree check failed: {e}")
 
+        return None, None
+
+    @staticmethod
+    def check_salary_requirement(soup):
+        """Reject jobs paying under $25/hr. Accept jobs with no salary listed."""
+        if not soup:
+            return None, None
+        try:
+            import re as _re
+            # Scan full page — salary often appears at bottom of Workday pages
+            page_text = soup.get_text()[:15000]
+            patterns = [
+                r'\$(\d+(?:\.\d+)?)\s*/\s*hr',
+                r'\$(\d+(?:\.\d+)?)\s*(?:per\s*hour|/hour)',
+                r'pay\s*range[:\s]+\$(\d+(?:\.\d+)?)',
+                r'compensation[:\s]+\$(\d+(?:\.\d+)?)',
+                r'\$(\d+(?:\.\d+)?)\s*(?:USD|usd)?\s*/\s*(?:hr|hour)',
+                r'hourly\s+rate[:\s]+\$(\d+(?:\.\d+)?)',
+                r'\$(\d+(?:\.\d+)?)\s*-\s*\$?\d+(?:\.\d+)?\s*/\s*hr',
+                r'starting\s+(?:at\s+)?\$(\d+(?:\.\d+)?)\s*/\s*hr',
+                r'\$(\d+(?:\.\d+)?)\s*-\s*\$(\d+(?:\.\d+)?)\s*(?:per\s*hour|/hour|usd/hr)',
+                r'proposed\s+(?:minimum\s+)?salary[:\s]+\$(\d+(?:\.\d+)?)',
+                r'base\s+pay[:\s]+\$(\d+(?:\.\d+)?)',
+                r'hourly[:\s]+\$(\d+(?:\.\d+)?)',
+                r'pay\s+type[:\s]+hourly.*?\$(\d+(?:\.\d+)?)',
+                r'\$(\d+(?:\.\d+)?)\s*(?:USD)?\s*(?:hourly|per\s+hr)',
+                r'salary.*?\$(\d+(?:\.\d+)?)\s*(?:to|-|–)\s*\$(\d+(?:\.\d+)?)\s*(?:per\s*hour|/hour|hourly)',
+                r'(?:pay|wage|rate).*?\$(\d+(?:\.\d+)?)\s*(?:an?\s+hour|/hr|per\s+hour)',
+                r'\$(\d+(?:\.\d+)?)\s*/\s*(?:hour|hr)\s*(?:USD|usd)?',
+            ]
+            found = []
+            for p in patterns:
+                for m in _re.finditer(p, page_text, _re.I):
+                    try:
+                        v = float(m.group(1))
+                        if 1 < v < 200:
+                            found.append(v)
+                    except Exception:
+                        pass
+            if not found:
+                return None, None
+            low = min(found)
+            high = max(found)
+            # Accept if max salary >= $25/hr (pay range like $20-$35 should pass)
+            if high >= 25.0:
+                return None, None
+            if low < 25.0:
+                return "REJECT", f"Low salary: ${low:.0f}/hr (minimum $25/hr)"
+        except Exception as e:
+            logging.debug(f"Salary check failed: {e}")
         return None, None
 
     @staticmethod
@@ -1959,6 +3051,7 @@ class ValidationHelper:
         if not soup:
             return None
 
+
         try:
             from aggregator.utils import DateParser
             from aggregator.config import PAGE_TEXT_STANDARD_SCAN
@@ -2017,11 +3110,6 @@ class ValidationHelper:
                     age_days = DateParser.extract_days_ago(matched_text)
 
                     if age_days is not None:
-                        try:
-                            from aggregator.config import MAX_REASONABLE_AGE_DAYS
-                        except (ImportError, AttributeError):
-                            MAX_REASONABLE_AGE_DAYS = 365
-
                         if age_days > MAX_REASONABLE_AGE_DAYS:
                             logging.warning(
                                 f"Page age {age_days} exceeds reasonable ({MAX_REASONABLE_AGE_DAYS}) - ignoring"
@@ -2056,7 +3144,11 @@ class ValidationHelper:
             for pattern in [
                 r"bachelor'?s?\s+(?:students?|degree|candidates?)\s+only",
                 r"undergraduate\s+(?:students?|only)",
+                r"undergraduate\s+students?\s+only",
+                r"open\s+to\s+undergraduate\s+students?",
+                r"for\s+undergraduate\s+students?\s+only",
                 r"currently\s+pursuing\s+a?\s+bachelor",
+                r"only\s+open\s+to\s+undergraduate",
             ]:
                 match = re.search(pattern, page_text, re.I)
                 if match:
@@ -2066,7 +3158,7 @@ class ValidationHelper:
                         )
                     ]
                     if not any(
-                        kw in context for kw in ["master", "ms/phd", "graduate"]
+                        any(re.search(rf"\\b{kw}\\b", context) for kw in ["master", "ms/phd", "graduate degree", "grad student", "graduate program", "bs/ms", "ms ", " ms", "ms degree", "pursuing.*ms", "pursuing.*master"])
                     ):
                         return "REJECT", "Bachelor's students only"
         except Exception as e:
@@ -2085,6 +3177,9 @@ class ValidationHelper:
 
             # Patterns that indicate CURRENT undergrad enrollment required
             undergraduate_patterns = [
+                r"active\s+student\s+(?:currently\s+)?obtaining\s+a\s+bachelor",
+                r"currently\s+obtaining\s+(?:a\s+|an\s+)?bachelor",
+                r"student\s+obtaining\s+(?:a\s+)?(?:bs|ba|b\.s\.|b\.a\.)",
                 r"pursuing\s+(?:a\s+)?bachelor'?s?\s+degree",
                 r"currently\s+pursuing\s+(?:a\s+)?bachelor'?s?\s+degree",
                 r"working\s+towards?\s+(?:a\s+)?bachelor'?s?\s+degree",
@@ -2098,6 +3193,49 @@ class ValidationHelper:
                 r"currently\s+enrolled\s+in\s+(?:a\s+)?bachelor",
                 r"entering\s+(?:junior|senior)\s+year",
                 r"(?:sophomore|junior|senior)\s+standing",
+                r"currently\s+a\s+college\s+student",
+                r"phd\s+(?:students?\s+)?(?:preferred|required|only)",
+                r"3rd\s+year\s+phd\s+and\s+above",
+                r"doctoral\s+degree.*required",
+                r"must\s+be\s+pursuing\s+a\s+ph\.?d",
+                r"\(ph\.?d\.?\)",
+                r"ph\.?d\.?\s+intern",
+                r"research\s+scientist\s+intern.*(?:audio|speech|vision|nlp|perception)",
+                r"20\d\d\s+start\s+\(ph\.?d",
+                r"summer\s+2027",
+                r"fall\s+2027",
+                r"2027\s+start",
+                r"start.*2027",
+                r"phd\s+internship",
+                r"in\s+the\s+process\s+of\s+obtaining.*ph\.?d",
+                r"currently\s+has.*ph\.?d\s+degree",
+                r"ph\.?d\s+degree\s+in\s+the\s+field\s+of",
+                r"(?:requires?|must\s+have).*ph\.?d\s+(?:degree|student|candidate)",
+                r"currently\s+pursuing\s+ph\.?d",
+                r"preferably\s+a\s+current\s+3rd\s+year",
+                r"must\s+be\s+currently\s+pursuing\s+a\s+bachelor",
+                # P&G writes "In process of obtaining a Bachelors degree" -
+                # no apostrophe, and "in process of" rather than "pursuing".
+                # The PhD equivalent was already covered; the bachelor one
+                # was not, so an undergrad-only internship reached the sheet.
+                r"in\s+(?:the\s+)?process\s+of\s+obtaining\s+(?:a\s+|an\s+)?bachelor",
+                r"(?:obtaining|working\s+towards?)\s+(?:a\s+|an\s+)?bachelor'?s?\s+degree",
+                r"not\s+open\s+to\s+candidates\s+on\s+opt",
+                r"no\s+sponsorship\s+available.*not\s+open\s+to",
+                r"actively\s+pursuing.*bachelor.*computer\s+(?:science|engineering)",
+                r"must\s+be\s+actively\s+enrolled.*bachelor",
+                r"current\s+student\s+pursuing.*bachelor",
+                r"students?\s+must\s+be\s+continuing.*degree\s+during",
+                r"associate.?s.*or.*bachelor.?s.*degree.*preferred",
+                r"enrolled.*associate.?s.*or.*bachelor",
+                r"actively\s+enrolled.*associate.?s.*or.*bachelor",
+                r"student\s+going\s+into\s+junior\s+or\s+senior\s+year",
+                r"rising\s+junior\s+or\s+senior",
+                r"scheduled\s+to\s+obtain.*bachelor.*202[678]",
+                r"junior\s+or\s+senior.*pursuing.*bachelor",
+                r"pursuing\s+bsee",
+                r"presently\s+pursuing\s+bsee",
+                r"currently\s+pursuing.*bachelor.*computer.*science.*data.*science",
                 r"undergraduate\s+students?\s+only",
                 r"must\s+be\s+pursuing\s+(?:a\s+)?(?:bs|ba)\b",
                 r"enrolled\s+in\s+(?:an?\s+)?undergraduate\s+program",
@@ -2113,47 +3251,91 @@ class ValidationHelper:
                 r"undergraduate\s+enrollment\s+required",
                 r"must\s+be\s+enrolled\s+in\s+bachelor",
                 r"bachelor'?s?\s+program\s+enrollment",
+                r"currently\s+enrolled\s+in\s+a\s+bachelor'?s?\s+degree\s+program",
+                r"enrolled\s+in\s+(?:a\s+)?bachelor'?s?\s+degree\s+program",
                 r"(?:junior|senior)\s+year\s+standing",
+                r"rising\s+(?:sophomore|junior|senior)",
+                r"advancing\s+to\s+(?:their\s+)?(?:junior|senior)\s+year",
+                r"at\s+least\s+advancing\s+to\s+(?:their\s+)?(?:junior|senior)",
+                r"entering\s+(?:their\s+)?(?:junior|senior)\s+year",
+                r"going\s+into\s+(?:their\s+)?(?:junior|senior)\s+year",
+                r"currently\s+enrolled\s+college\s+student",
+                r"currently\s+enrolled\s+(?:as\s+a\s+)?college\s+student",
+                r"enrolled\s+college\s+student",
+                r"intern\s+undergraduate",
+                r"undergraduate\s+intern",
+                r"applicants?\s+considered\s+for.*undergraduate\s+only",
+                r"undergraduate\s+students?\s+pursuing",
+                r"pursuing\s+(?:a\s+)?bachelor.*computer\s+(?:science|engineering)",
                 r"class\s+standing:\s*(?:junior|senior)",
+                r"enrolled\s+(?:as\s+a\s+)?(?:full.?time\s+)?student\s+at\s+(?:an?\s+)?accredited\s+(?:four.year|4.year)",
+                r"currently\s+enrolled\s+(?:as\s+a\s+)?(?:full.?time\s+)?student.*(?:four.year|4.year|college|university)",
+                r"must\s+be\s+(?:a\s+)?(?:current|active|full.?time)\s+student.*(?:four.year|4.year|college|university)",
+                r"accredited\s+four.year\s+(?:college|university)",
+                r"enrolled.*(?:fulltime|full.time).*(?:college|university).*(?:bachelor|undergraduate|four.year)",
                 r"pursuing\s+undergraduate\s+degree",
                 r"current\s+undergraduate\s+status",
                 r"undergraduate\s+student\s+status",
+                r"(?:junior|senior)\s+or\s+senior\s+year",
+                r"in\s+their\s+(?:junior|senior)\s+or\s+senior\s+year",
+                r"junior\s+or\s+senior\s+year",
+                r"junior\s+or\s+senior\s+standing",
+                r"must\s+be\s+(?:a\s+)?(?:junior|senior)\s+(?:or\s+senior\s+)?(?:year|student)",
+                r"for\s+(?:junior|senior)\s+(?:year\s+)?students\s+only",
                 r"bachelor'?s?\s+level\s+student",
                 r"undergraduate\s+program\s+student",
                 r"enrolled\s+in\s+(?:a\s+)?4-year\s+(?:bachelor|undergraduate)",
                 r"pursuing\s+(?:a\s+)?4-year\s+degree",
+                r"rising\s+(?:sophomore|junior|senior)\s+(?:year\s+)?(?:student|pursuing|working)",
+                r"completed\s+(?:2|3|two|three)\s+years?\s+by\s+start",
+                r"must\s+have\s+completed\s+(?:sophomore|junior|senior)\s+year",
+                r"entering\s+(?:their\s+)?(?:sophomore|junior|senior)\s+year",
+                r"currently\s+enrolled\s+as\s+a\s+(?:junior|senior)\s+pursuing\s+a\s+bachelor",
+                r"junior\s+or\s+senior\s+pursuing\s+a\s+bachelor",
                 r"(?:must|should)\s+be\s+pursuing\s+(?:their|a)\s+bachelor",
                 r"target(?:ed)?\s+majors?.*bachelor",
                 r"(?:associate|associates|aa|as)\s+(?:or|and)\s+bachelor",
                 r"(?:associate|aa)\s+degree.*only",
                 r"no\s+(?:prior\s+)?experience.*bachelor.*program",
-                r"graduating.*with\s+(?:a\s+)?(?:ba|bs|ba/bs|bs/ba|b\.s\.|b\.a\.)",
+                r"graduating.*with\s+(?:a\s+)?(?:ba|bs|ba/bs|bs/ba|b\.s\.|b\.a\.)\b",
                 r"with\s+(?:a\s+)?(?:ba/bs|bs/ba)\s*,?\s*majoring",
                 r"graduating.*(?:ba|bs|ba/bs|bs/ba)\s*,?\s*majoring",
                 r"receive\s+(?:a\s+)?(?:ba|bs|ba/bs)\s+(?:by|before|prior)",
+                r"high\s+school\s+diploma.*currently\s+attending\s+(?:a\s+)?college",
             ]
 
             for pattern in undergraduate_patterns:
                 match = re.search(pattern, page_text, re.I)
                 if match:
                     # Check context for flexibility (MS/graduate also acceptable)
-                    context_start = max(0, match.start() - 200)
-                    context_end = min(len(page_text), match.end() + 200)
+                    context_start = max(0, match.start() - 500)
+                    context_end = min(len(page_text), match.end() + 500)
                     context = page_text[context_start:context_end]
 
                     # If context mentions graduate/master's, it's flexible
                     if any(
-                        kw in context
+                        bool(re.search(rf"\b{kw}\b", context, re.I))
                         for kw in [
                             "master",
+                            "masters",
                             "graduate",
                             "ms/phd",
                             "or graduate",
                             "and graduate",
-                            "or master's",
+                            "or master",
                             "master's degree",
+                            "masters degree",
                             "ms degree",
                             "or ms",
+                            r"m\.s\.",
+                            "grad student",
+                            "graduate student",
+                            "bachelor.*or higher degree",  # "bachelor or higher" means MS accepted
+                            "bachelor.*or.*master.*degree",  # explicit bachelor+master
+                            "bachelor.*or.*master",
+                            "bachelor.*master",
+                            "pursuing.*master",
+                            "advanced degree",
                         ]
                     ):
                         logging.debug(
@@ -2225,6 +3407,10 @@ class ValidationHelper:
                 r"(?:pursuing|enrolled\s+in|candidates?\s+in).*\bphd\s+(?:degree|program)",
                 r"phd-only",
                 r"phd\s+internship",
+                r"in\s+the\s+process\s+of\s+obtaining.*ph\.?d",
+                r"currently\s+has.*ph\.?d\s+degree",
+                r"ph\.?d\s+degree\s+in\s+the\s+field\s+of",
+                r"(?:requires?|must\s+have).*ph\.?d\s+(?:degree|student|candidate)",
             ]
 
             phd_only_patterns.extend(ENHANCED_PHD_PATTERNS)
@@ -2294,6 +3480,21 @@ class ValidationHelper:
                 r"u\.?s\.?\s+citizens?\s+only",
                 r"must\s+be\s+authorized\s+to\s+work.*(?:without|no)\s+(?:employer\s+)?sponsor",
                 r"permanent\s+(?:us\s+)?work\s+authorization\s+required",
+                # FIX 3: Trane-style combined citizenship+sponsorship phrase
+                r"u\.?s\.?\s+citizen\s+or\s+have\s+the\s+legal\s+right\s+to\s+work",
+                r"legal\s+right\s+to\s+work.*without\s+(?:requiring\s+)?sponsor",
+                r"without\s+requiring\s+sponsorship\s+now\s+or\s+in\s+the\s+future",
+                r"not\s+(?:now|currently).*require.*sponsorship.*future",
+                r"no\s+visa\s+sponsorship.*(?:now|future|available)",
+                r"students?\s+must\s+be\s+authorized\s+to\s+work\s+in\s+the\s+u\.?s\.?\s+without",
+                r"u\.?s\.?\s+citizen\b(?!\s+or\s+permanent)",  # "U.S. Citizen" alone
+                r"\bu\.?s\.?\s+citizenship\b",
+                r"must\s+be\s+a\s+u\.?s\.?\s+citizen",
+                r"candidates?\s+must\s+be\s+u\.?s\.?\s+citizens?",
+                r"this\s+role\s+is\s+not\s+eligible\s+for.*sponsor",
+                r"not\s+eligible\s+for\s+employer.sponsored\s+work\s+visa",
+                r"no\s+employment\s+sponsorship\s+(?:required|available).*(?:now|future)",
+                r"employment\s+sponsorship\s+(?:is\s+)?not\s+(?:required|available)",
             ]
 
             for pattern in citizenship_patterns:
@@ -2532,8 +3733,8 @@ class ValidationHelper:
                             has_geo = True
                             break
                     # Check 2-letter state codes
-                    if not has_geo and re.search(r'[A-Z]{2}', required_location):
-                        code = re.search(r'([A-Z]{2})', required_location)
+                    if not has_geo and re.search(r'\b[A-Z]{2}\b', required_location):
+                        code = re.search(r'\b([A-Z]{2})\b', required_location)
                         if code and validate_us_state_code(code.group(1)):
                             has_geo = True
                     # Check city names and region words
@@ -2601,6 +3802,12 @@ class ValidationHelper:
             page_text = soup.get_text()[:15000].lower()
 
             clearance_patterns = [
+                r"export\s+administration\s+regulations",
+                r"ear\s+eligible",
+                r"must\s+be\s+ear\s+eligible",
+                r"eligible\s+under.*export",
+                r"us\s+export\s+control",
+                r"itar\s+(?:compliance|eligible|required)",
                 r"(?:security\s+)?clearance.*(?:required|preferred)",
                 r"must\s+(?:be\s+)?(?:able\s+to\s+)?(?:obtain|get|acquire).*clearance",
                 r"(?:eligible|eligibility)\s+for.*(?:security\s+)?clearance",
@@ -2613,6 +3820,11 @@ class ValidationHelper:
                 r"dod\s+(?:secret|top\s+secret)",
                 r"ts/sci",
                 r"polygraph",
+                r"ear/itar",
+                r"itar.*(?:required|compliance|restriction)",
+                r"export\s+control.*(?:required|compliance|restriction)",
+                r"access\s+to\s+export.controlled",
+                r"export.controlled.*(?:information|technology|data)",
             ]
 
             for pattern in clearance_patterns:
@@ -2710,41 +3922,28 @@ class ValidationHelper:
 
         return None, None
 
-    @staticmethod
-    def validate_company_field(company, title, url):
-        """ORIGINAL"""
-        if not company or company == "Unknown" or not company.strip():
-            return True, ValidationHelper.extract_company_from_domain(url), None
-
-        company = company.strip()
-
-        if not CompanyValidator.is_valid(company):
-            return True, ValidationHelper.extract_company_from_domain(url), None
-
-        if len(company) > 100:
-            return False, company, "Company name too long"
-
-        if (
-            sum(
-                1
-                for kw in ["intern", "software", "engineer", "developer"]
-                if kw in company.lower()
-            )
-            >= 2
-        ):
-            return False, company, "Company field contains job title"
-
-        return True, company, None
 
     @staticmethod
     def clean_legal_entity(company):
-        """ORIGINAL"""
+        """ORIGINAL + FIX 5: strip leading The/trailing Companies/Group/Holdings"""
         if not company:
             return company
+        try:
+            from aggregator.apply_learned import fix_company_slug
+            company = fix_company_slug(company)
+        except Exception:
+            pass
         company = re.sub(r"^\d+\s+|^[A-Z]{2,4}[-\s]", "", company)
-        return re.sub(
+        company = re.sub(
             r",?\s+(Inc\.?|LLC\.?|Corp\.?|Ltd\.?)$", "", company, flags=re.I
         ).strip()
+        # FIX 5: strip "The X Companies" → "X", "X Holdings" → "X"
+        company = re.sub(r"^The\s+", "", company, flags=re.I).strip()
+        company = re.sub(
+            r"\s+(Companies|Company|Group|Holdings|Partners|Associates|Enterprises|Solutions|Services|Technologies|Technology)$",
+            "", company, flags=re.I
+        ).strip()
+        return company
 
     @staticmethod
     @lru_cache(maxsize=256)
@@ -2770,8 +3969,17 @@ class ValidationHelper:
         return "Unknown"
 
     @staticmethod
-    def check_sponsorship_status(soup):
-        """ORIGINAL"""
+    def check_sponsorship_status(soup, company=""):
+        """ORIGINAL + Brain caching"""
+        if company:
+            try:
+                from outreach.brain import Brain
+                cached = Brain.get().get_sponsorship(company)
+                if cached in ("Yes", "No"):
+                    logging.debug(f"Sponsorship from Brain: {company} -> {cached}")
+                    return cached
+            except Exception:
+                pass
         if not soup:
             return "Unknown"
 
@@ -2779,10 +3987,16 @@ class ValidationHelper:
             page_text = soup.get_text()[:3000]
 
             if re.search(
-                r"(?:will|does|provides?)\s+sponsor|h-?1b.*sponsor", page_text, re.I
+                r"(?:will|does|provides?)\s+sponsor|h-?1b.*sponsor|sponsor.*h-?1b|h-?1b\s+visa\s+sponsor", page_text, re.I
             ):
                 return "Yes"
-            if re.search(r"(?:no|not|doesn't)\s+sponsor", page_text, re.I):
+            if re.search(r"(?:no|not|doesn\'t|cannot|can\'t|unable\s+to|will\s+not|does\s+not)\s+(?:provide\s+)?(?:visa\s+)?sponsor", page_text, re.I):
+                return "No"
+            if re.search(r"unable\s+to\s+sponsor\s+or\s+take\s+over\s+sponsorship", page_text, re.I):
+                return "No"
+            if re.search(r"not\s+able\s+to\s+(?:provide\s+)?(?:visa\s+)?sponsor", page_text, re.I):
+                return "No"
+            if re.search(r"sponsorship\s+(?:is\s+)?(?:not\s+)?available", page_text, re.I):
                 return "No"
         except Exception as e:
             logging.debug(f"Sponsorship check failed: {e}")
@@ -2810,6 +4024,45 @@ class CompanyExtractor:
             logging.debug(f"URL company mapping failed: {e}")
 
         return ExtractionResult(None, 0.0, "url_mapping")
+
+    @staticmethod
+    def learn_company_name(url, company_name):
+        """Save URL domain→company mapping to brain.json for future use"""
+        if not url or not company_name or company_name in ("Unknown", ""):
+            return
+        try:
+            from outreach.brain import Brain
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc.lower().replace("www.", "")
+            # Take the registrable name, not the first label. "boards" from
+            # boards.greenhouse.io and "careers" from careers.stripe.com are
+            # subdomains, not companies - the old code learned {'boards':
+            # 'Figma'} and skipped Stripe entirely.
+            _parts = [p for p in domain.split(".") if p]
+            _GENERIC_SUB = {"boards", "job-boards", "jobs", "careers", "apply",
+                            "www", "app", "my", "hire", "recruiting", "talent",
+                            "wd1", "wd3", "wd5", "wd12", "wd103", "wd108"}
+            _named = [p for p in _parts[:-1] if p not in _GENERIC_SUB]
+            slug = _named[-1] if _named else (_parts[0] if _parts else "")
+            _ats = {"greenhouse", "lever", "workable", "ashbyhq", "rippling",
+                    "smartrecruiters", "icims", "taleo", "bamboohr", "jobvite",
+                    "myworkdayjobs", "successfactors", "oraclecloud", "adp",
+                    "job-boards", "careers", "jobs", "apply", "wd1", "wd3", "wd5"}
+            if slug in _ats or len(slug) < 3:
+                return
+            # Brain exposes _data, not data. This raised AttributeError on
+            # EVERY job - 145 swallowed failures in one run - so company-name
+            # learning has never once worked. Found by the swallowed-exception
+            # counter on its first run.
+            b = Brain.get()
+            if "learned_company_names" not in b._data:
+                b._data["learned_company_names"] = {}
+            if slug not in b._data["learned_company_names"]:
+                b._data["learned_company_names"][slug] = company_name
+                b.save()
+                logging.info(f"Learned company: {slug} → {company_name}")
+        except Exception as _sw:
+            from aggregator.swallowed import swallow as _s; _s('brain.learned_company_names', _sw)
 
     @staticmethod
     def extract_from_json_ld(soup):
@@ -2997,12 +4250,16 @@ class CompanyExtractor:
                 LEGAL_ENTITY_SUFFIXES,
                 DBA_INDICATORS,
                 COMPANY_NORMALIZATIONS,
+                COMPANY_NAME_FIXES,
+                GARBAGE_COMPANY_NAMES,
             )
         except (ImportError, AttributeError):
             PORTAL_NAME_INDICATORS = []
             LEGAL_ENTITY_SUFFIXES = ["LLC", "Inc.", "Corp.", "Ltd."]
             DBA_INDICATORS = [" DBA ", " d/b/a "]
             COMPANY_NORMALIZATIONS = {}
+            COMPANY_NAME_FIXES = {}
+            GARBAGE_COMPANY_NAMES = set()
 
         import html
 
@@ -3010,7 +4267,7 @@ class CompanyExtractor:
 
         # Strip GitHub continuation row prefixes (e.g. "at Atlantic Health System")
         name = re.sub(r"^(?:at|by|for|with|from)\s+", "", name, flags=re.I)
-        name = re.sub(r"^[-*#@!]+\s*", "", name)
+        name = re.sub(r"^[-*#@!|:]+\s*", "", name)
 
         name = re.sub(r"^[A-Z]{2,6}\d{2,6}\s+", "", name)
         name = re.sub(r"^\d{2}-\d{7}\s+", "", name)
@@ -3072,6 +4329,18 @@ class CompanyExtractor:
                     name = name[: -len(suffix)].strip()
                     break
 
+        # ── Self-healing: apply COMPANY_NAME_FIXES + GARBAGE_COMPANY_NAMES ──
+        try:
+            from aggregator.config import COMPANY_NAME_FIXES, GARBAGE_COMPANY_NAMES
+            name_key = name.lower().strip()
+            if name_key in GARBAGE_COMPANY_NAMES:
+                return "Unknown"
+            if name_key in COMPANY_NAME_FIXES:
+                fixed = COMPANY_NAME_FIXES[name_key]
+                return "Unknown" if fixed == "Unknown" else fixed
+        except Exception:
+            pass
+
         return name
 
     @staticmethod
@@ -3082,6 +4351,10 @@ class CompanyExtractor:
             return False
         text_lower = text.lower()
         if any(p in text_lower for p in ["submit your", "sign in", "apply now"]):
+            return True
+        # Reject page titles like "ICF Jobs", "RTS Careers", "Company - Careers"
+        import re as _tt_re
+        if _tt_re.match(r'^[A-Za-z\s]{2,20}\s+(?:Jobs|Careers|Openings|Positions)$', text.strip(), _tt_re.I):
             return True
         return (
             sum(
@@ -3181,3 +4454,49 @@ class QualityScorer:
     @staticmethod
     def is_acceptable_quality(score, min_score=4):
         return score >= min_score
+
+
+# ── Fuzzy City Correction ──────────────────────────────────────────────
+_COMMON_CITIES = {
+    "farmington": "Farmington", "clearwater": "Clearwater",
+    "springfield": "Springfield", "binghamton": "Binghamton",
+    "pittsburgh": "Pittsburgh", "indianapolis": "Indianapolis",
+    "minneapolis": "Minneapolis", "philadelphia": "Philadelphia",
+    "albuquerque": "Albuquerque", "sacramento": "Sacramento",
+    "jacksonville": "Jacksonville", "san francisco": "San Francisco",
+    "los angeles": "Los Angeles", "new york": "New York",
+}
+
+def _fuzzy_fix_city(city_str):
+    """Fix garbled city names using edit distance against known cities."""
+    if not city_str or len(city_str) < 4:
+        return city_str
+    city_lower = city_str.lower().strip()
+    # Direct match
+    if city_lower in _COMMON_CITIES:
+        return _COMMON_CITIES[city_lower]
+    # Edit distance check for short strings
+    best_match = None
+    best_dist = 3  # max 2 edits
+    for known in _COMMON_CITIES:
+        if abs(len(known) - len(city_lower)) > 2:
+            continue
+        dist = _levenshtein(city_lower, known)
+        if dist < best_dist:
+            best_dist = dist
+            best_match = _COMMON_CITIES[known]
+    return best_match if best_match else city_str
+
+def _levenshtein(s1, s2):
+    """Simple Levenshtein distance."""
+    if len(s1) < len(s2):
+        return _levenshtein(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
+        prev = curr
+    return prev[len(s2)]

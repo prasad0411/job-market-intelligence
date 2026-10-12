@@ -28,7 +28,27 @@ migrate_structure_v2.py
 # === Screenshots ===
 screenshots/
 !docs/screenshots/
-!docs/screenshots/
-!docs/screenshots/
 
 resume/
+*.bak*
+
+# === Editor / temp ===
+*.swp
+*.swo
+*~
+*.orig
+*.tmp
+*.rej
+
+# === Test artifacts ===
+.pytest_cache/
+.coverage
+htmlcov/
+*.precap_*
+.vscode/
+.local/lake/
+.local/warehouse.duckdb
+data_platform/dbt/target/
+data_platform/dbt/dbt_packages/
+data_platform/dbt/logs/
+data_platform/dbt/.user.yml

@@ -61,7 +61,7 @@ class ExtractionResult:
 
 class PlatformDetector:
     @staticmethod
-    @lru_cache(maxsize=1024)
+    @lru_cache(maxsize=2048)  # FIX 9: bumped from 1024 — processes 500+ URLs/run
     def detect(url):
         if not url:
             return "generic"
@@ -94,17 +94,14 @@ class CompanyNormalizer:
     }
 
     _ACRONYMS = {
-        "ibm",
-        "att",
-        "sap",
-        "hpe",
-        "aws",
-        "gcp",
-        "api",
-        "ai",
-        "ml",
-        "abb",
-        "asml",
+        "ibm", "att", "sap", "hpe", "aws", "gcp", "api", "ai", "ml",
+        "abb", "asml", "cmt", "atpco", "caci", "ptc", "nec", "sap",
+        "amd", "arm", "bae", "bmc", "cdk", "cgi", "csc", "dxc",
+        "efs", "ge", "gtl", "hcl", "hpe", "hrl", "ics", "idt",
+        "imc", "isc", "jpl", "kla", "lam", "lgc", "llc", "mit",
+        "mks", "nsa", "ntt", "osi", "pge", "qsr", "rga", "sci",
+        "sei", "sns", "sri", "tcs", "tmo", "tmx", "tpg", "ttec",
+        "ukg", "ups", "usaa", "vsp", "wex", "wpp", "wtw",
     }
 
     _SPECIAL_CAPS = {
@@ -113,6 +110,19 @@ class CompanyNormalizer:
         "linkedin": "LinkedIn",
         "paypal": "PayPal",
         "ebay": "eBay",
+        "nuclearn-ai": "Nuclearn AI",
+        "newtonresearch": "Newton Research",
+        "axway software sa": "Axway",
+        "axwaysoftwaresa": "Axway",
+        "newton research": "Newton Research",
+        "tricentis americas": "Tricentis",
+        "tricentisamericas": "Tricentis",
+        "nuclearnai": "Nuclearn AI",
+        "nuclearn": "Nuclearn AI",
+        "mhicareers": "MHI",
+        "queracomputing": "Quera Computing",
+        "verygoodsecurity": "Very Good Security",
+        "cinfin": "Cincinnati Financial",
         "tiktok": "TikTok",
     }
 
@@ -124,6 +134,16 @@ class CompanyNormalizer:
 
         try:
             name = company_name.strip()
+
+            # Strip leading ATS internal codes: "F1138 ", "C2024-", "Company 601 ", "1600 "
+            import re as _re_co
+            name = _re_co.sub(r"^[A-Z]\d{3,5}\s+", "", name).strip()
+            name = _re_co.sub(r"^\d{1,6}\s+", "", name).strip()   # "1600 NIO" → "NIO"
+            name = _re_co.sub(r"^[A-Z]{1,3}-\d{3,6}\s+", "", name).strip()
+            name = _re_co.sub(r"^Company\s+\d+\s+", "", name, flags=_re_co.I).strip()  # "Company 601 X" → "X"
+            name = _re_co.sub(r"^Workable\s+", "", name, flags=_re_co.I).strip()  # "Workable CompanyName" → "CompanyName"
+            name = _re_co.sub(r"^[A-Z]{2,5}\d+\s+", "", name).strip()  # "USC0 Revvity" → "Revvity"
+
             name_lower = name.lower()
 
             for prefix in COMPANY_NAME_PREFIXES:
@@ -136,6 +156,8 @@ class CompanyNormalizer:
                 name = name.replace(stopword, "")
 
             name = name.strip()
+            # Strip trailing " -" or " –" artifact (e.g. "PHINIA Inc. -")
+            name = re.sub(r'\s*[-–]+\s*$', '', name).strip()
             name_lower = name.lower()
 
             if name_lower in COMPANY_SLUG_MAPPING:
@@ -331,6 +353,36 @@ class RoleCategorizer:
 # ============================================================================
 
 
+def is_identifying_url(url):
+    """False for URLs that do NOT identify a single posting.
+
+    clean_url() strips the query string, so every Google-search fallback
+    collapses to "https://google.com/search" - 306 sheet rows share that one
+    string today. Using it as a dedup key would drop the next fallback job of
+    ANY company as a duplicate of an unrelated one. Search/listing URLs must
+    fall back to company+title instead.
+    """
+    if not url:
+        return False
+    u = str(url).lower()
+    NON_IDENTIFYING = (
+        "google.com/search", "bing.com/search", "duckduckgo.com",
+        "linkedin.com/jobs/search", "indeed.com/jobs?", "glassdoor.com/Job/",
+        "/search?", "/jobs/search", "/careers/search",
+    )
+    if any(s in u for s in NON_IDENTIFYING):
+        return False
+    # a bare domain with no path identifies a company, not a job
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(u)
+        if not p.path or p.path.strip("/") == "":
+            return False
+    except Exception:
+        pass
+    return True
+
+
 class URLCleaner:
     _CLEAN_PATTERN = re.compile(r"[?#].*$")
 
@@ -346,7 +398,7 @@ class URLCleaner:
                 if match:
                     return match.group(1).lower()
 
-            return cls._CLEAN_PATTERN.sub("", url).lower().rstrip("/")
+            return re.sub(r"://www\.", "://", cls._CLEAN_PATTERN.sub("", url).lower().rstrip("/"))
         except Exception as e:
             logging.debug(f"URL cleaning failed for '{url}': {e}")
             return url.lower()
@@ -568,6 +620,9 @@ class QualityScorer:
             location = job_data.get("location", "Unknown")
             if location and location != "Unknown":
                 score += 2
+            # FIX 4: penalize Unknown location — common sign of bad extraction
+            else:
+                score -= 1
 
             job_id = job_data.get("job_id", "N/A")
             if job_id and job_id != "N/A" and not job_id.startswith("HASH_"):
@@ -577,6 +632,10 @@ class QualityScorer:
             if 15 < len(title) < 120:
                 score += 1
 
+            # FIX 4: require at minimum valid company + title
+            if (not company or company in ["Unknown", "N/A"]) and                (not title or len(title) < 5):
+                score = 0
+
         except Exception as e:
             logging.debug(f"Quality scoring failed: {e}")
 
@@ -585,6 +644,22 @@ class QualityScorer:
     @staticmethod
     def is_acceptable_quality(score, min_score=4):
         return score >= min_score
+
+
+# FIX 7: module-level import for DataSanitizer hot-loop configs
+try:
+    from aggregator.config import (
+        DATA_SANITIZATION_PREFERENCES as _DS_PREFS,
+        FIELD_PREFIXES_TO_REMOVE as _DS_PREFIXES,
+        FULL_STATE_NAMES as _DS_STATE_NAMES,
+        validate_us_state_code as _DS_VALIDATE_STATE,
+    )
+    _DS_CONFIG_LOADED = True
+except Exception:
+    _DS_CONFIG_LOADED = False
+    _DS_PREFS = {}
+    _DS_PREFIXES = []
+    _DS_STATE_NAMES = {}
 
 
 class DataSanitizer:
@@ -646,8 +721,9 @@ class DataSanitizer:
 
         try:
             text = str(title)
-
-            from aggregator.config import DATA_SANITIZATION_PREFERENCES, FIELD_PREFIXES_TO_REMOVE
+            # FIX 7: use module-level imports instead of per-call imports
+            DATA_SANITIZATION_PREFERENCES = _DS_PREFS
+            FIELD_PREFIXES_TO_REMOVE = _DS_PREFIXES
 
             if DATA_SANITIZATION_PREFERENCES.get("remove_emojis", True):
                 text = cls._remove_emojis(text)
@@ -663,6 +739,21 @@ class DataSanitizer:
                     if text.startswith(prefix):
                         text = text[len(prefix) :].strip()
                         break
+
+            # Strip "CompanyName.ai " or "CompanyName.com " prefix from titles
+            text = re.sub(r'^[A-Za-z0-9]+\.[a-z]{2,4}\s+', '', text).strip()
+
+            # Strip trailing em-dash and en-dash artifacts: "Intern —" → "Intern"
+            text = re.sub(r'\s*[—–-]+\s*$', '', text).strip()
+
+            # Strip ATS location/division suffixes appended to titles:
+            # "AI/ML Modeling Engineer II- United States ENG/CPO/WTG ETR" → "AI/ML Modeling Engineer II"
+            # Pattern: "- <ALLCAPS or location words>" at end of title
+            text = re.sub(r'\s*-\s+(?:United States|US|USA)\s+[A-Z/]+$', '', text).strip()
+            text = re.sub(r'\s*[-–]\s+[A-Z]{2,}(?:[/\s][A-Z]{2,}){1,}$', '', text).strip()
+
+            # Fix missing space around dash: "Intern- AI" → "Intern - AI"
+            text = re.sub(r'(?<=[a-zA-Z])-(?=[A-Z])', ' - ', text).strip()
 
             if DATA_SANITIZATION_PREFERENCES.get("trim_whitespace", True):
                 text = re.sub(r"\s+", " ", text).strip()
@@ -680,8 +771,9 @@ class DataSanitizer:
 
         try:
             text = str(company)
-
-            from aggregator.config import DATA_SANITIZATION_PREFERENCES, FIELD_PREFIXES_TO_REMOVE
+            # FIX 7: use module-level imports
+            DATA_SANITIZATION_PREFERENCES = _DS_PREFS
+            FIELD_PREFIXES_TO_REMOVE = _DS_PREFIXES
 
             if DATA_SANITIZATION_PREFERENCES.get("remove_emojis", True):
                 text = cls._remove_emojis(text)
