@@ -297,6 +297,10 @@ cd ingest-ts && npm ci && npm test && npm run build
 node dist/index.js | head        # one JSON record per line; summary on stderr
 ```
 
+## Relevance scoring
+
+`aggregator/scorer.py`, contributed by [@saivedant169](https://github.com/saivedant169) in [#2](https://github.com/prasad0411/job-market-intelligence/pull/2), scores each valid posting from 0 to 100 against a resume: skill overlap weighted by how rare each skill is, title relevance, and company recognition. It runs offline with no new dependencies. Set `SCORE_JOBS = True` in `aggregator/config.py` and put a plain text resume at `.local/resume.txt`, and every run ranks its valid jobs, logs the top three and saves the full ranking to `.local/job_scores.json`. It never changes what is written to the Sheet, and any error is logged and ignored.
+
 ## Engineering decisions
 
 ### Dedup is tiered, and the strongest signal wins

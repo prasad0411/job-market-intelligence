@@ -646,6 +646,55 @@ def _analytics_rejection_rows(outcomes, today):
     return rows
 
 
+def _score_valid_jobs(valid_jobs):
+    """Rank this run's valid jobs against a resume when config.SCORE_JOBS is on.
+
+    Uses aggregator/scorer.py (contributed in PR #2). Off by default. It only logs the
+    ranking and saves it to a local file; it never changes what is written to the Sheet,
+    and any error here is logged and ignored so it can never block a run.
+    """
+    import json
+    import logging
+    import os
+
+    from aggregator import config as _cfg
+
+    log = logging.getLogger(__name__)
+    if not getattr(_cfg, "SCORE_JOBS", False) or not valid_jobs:
+        return None
+    resume = getattr(_cfg, "SCORE_RESUME_PATH", ".local/resume.txt")
+    out_path = getattr(_cfg, "SCORE_OUTPUT_PATH", ".local/job_scores.json")
+    try:
+        if not os.path.exists(resume):
+            log.warning("job scoring skipped: no resume at %s", resume)
+            return None
+        from aggregator.scorer import ResumeScorer
+        scorer = ResumeScorer(resume_path=resume)
+        ranked = []
+        for job in valid_jobs:
+            score = scorer.score_job(
+                title=job.get("title", "") or "",
+                company=job.get("company", "") or "",
+                location=job.get("location", "") or "",
+                description=job.get("description", "") or "",
+                job_type=job.get("job_type", "") or "",
+            )
+            ranked.append({"score": score, "company": job.get("company", ""),
+                           "title": job.get("title", ""), "url": job.get("url", "")})
+        ranked.sort(key=lambda r: r["score"], reverse=True)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        tmp = out_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(ranked, f, indent=2)
+        os.replace(tmp, out_path)
+        top = ", ".join(f"{r['company']} ({r['score']})" for r in ranked[:3])
+        log.info("job scoring: ranked %d valid jobs, top: %s", len(ranked), top)
+        return ranked
+    except Exception as exc:
+        log.warning("job scoring failed, run continues: %s", exc)
+        return None
+
+
 def _analytics_company_pairs(valid_jobs, discarded_jobs):
     """-> (company, outcome_type) pairs. Every job counts as seen."""
     pairs = []
@@ -884,6 +933,8 @@ class UnifiedJobAggregator:
 
         # Write valid jobs with WAL protection
         try:
+            # Optional relevance ranking (config.SCORE_JOBS); never changes what is written
+            _score_valid_jobs(self.valid_jobs)
             if _wal and self.valid_jobs:
                 _tx_valid = _wal.begin("add_valid_jobs", {
                     "count": len(self.valid_jobs),

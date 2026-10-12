@@ -3729,3 +3729,10 @@ COMPANY_BLACKLIST_PATTERNS = [
     "community college", "school district",
     "children's hospital", "nationwide children",
 ]
+
+# Relevance scoring with aggregator/scorer.py (contributed in PR #2). Off by default.
+# When on, each run ranks its valid jobs against the resume below and saves the ranking
+# to SCORE_OUTPUT_PATH. It never changes what is written to the Sheet.
+SCORE_JOBS = False
+SCORE_RESUME_PATH = ".local/resume.txt"
+SCORE_OUTPUT_PATH = ".local/job_scores.json"
