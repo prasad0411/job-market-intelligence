@@ -29,6 +29,7 @@ migrate_structure_v2.py
 screenshots/
 !docs/screenshots/
 
+resume/
 *.bak*
 
 # === Editor / temp ===
