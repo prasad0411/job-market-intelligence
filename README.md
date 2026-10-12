@@ -9,6 +9,10 @@
 [![Python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Sources](https://img.shields.io/badge/sources-29_·_1000%2B_ATS_boards-orange)](#data-sources)
 
+[![Live demo](https://img.shields.io/badge/Live_demo-dashboard-2c5364?style=for-the-badge&logo=react&logoColor=white)](https://prasad0411.github.io/job-market-intelligence/)
+
+**Live demo:** [prasad0411.github.io/job-market-intelligence](https://prasad0411.github.io/job-market-intelligence/), a public snapshot of the real pipeline, republished nightly.
+
 A self-maintaining data platform that aggregates early-career software engineering
 roles from 21 tracked feeds and over 1,000 discovered applicant-tracking-system boards —
 then deduplicates, validates, enriches with official H-1B sponsorship data, and
@@ -383,7 +387,7 @@ clean company names while feed-derived rows historically did not.
 
 ### Preflight — verifying the verifiers
 
-Twelve checks run at the start of every aggregator run, inside the one process
+Nineteen checks run at the start of every aggregator run, inside the one process
 that provably executes. They verify *connections*, not logic:
 
 | Check | Catches |
@@ -552,7 +556,7 @@ removed or rewritten to assert one expected outcome.
 in a source file passed happily while the code containing that string never ran.
 
 **Every bug gets a test named after what it broke.** `tests/test_wiring.py`
-carries seventeen of these — the age parser against every real format, blank-cell
+carries 29 of these — the age parser against every real format, blank-cell
 column shifts, hardcoded ATS ages, the learning-loop round trip, full-time roles
 surviving the internship gate, fuzzy dedup preserving specialisations, and
 preflight itself being demonstrably capable of detecting an injected bug.
