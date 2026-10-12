@@ -2266,6 +2266,14 @@ ROLE_CATEGORIES = {
 }
 
 TECHNICAL_ROLE_KEYWORDS = {
+    "compiler",
+    "kernel",
+    "runtime",
+    "gpu kernel",
+    "cuda kernel",
+    "operating system",
+    "low level",
+
     # Added after an audit found 20 applied-to roles being rejected:
     # these terms were absent, so titles built around them scored zero
     # technical signal. Singular forms are listed alongside plurals
