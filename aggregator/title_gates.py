@@ -31,7 +31,11 @@ import re
 # GSK co-op (Jan to Jul 2027) and May 2027 graduation.
 FULL_TIME_ONLY = True
 
-_INTERNISH = re.compile(r"\b(intern|internship|co-?op|summer\s+analyst)\b", re.I)
+# "NVIDIA 2027 Internships" and "Summer Co op" slipped through: the old
+# pattern missed the plural and the space-separated co op.
+_INTERNISH = re.compile(
+    r"\b(intern|interns|internship|internships|co[-\s]?op|co[-\s]?ops"
+    r"|summer\s+analyst|future\s+talent)\b", re.I)
 
 _BAD_TERM = re.compile(
     r"\b(summer|fall|autumn)\s*(?:20)?2[7-9]\b"       # Summer 2027, Fall 28
