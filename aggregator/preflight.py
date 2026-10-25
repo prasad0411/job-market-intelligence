@@ -297,7 +297,9 @@ def check_orphaned_modules():
              # dashboard_api.export_snapshot) under launchd; no module imports it.
              "export_snapshot",
              # Run by hand; nothing imports it.
-             "audit_notapplied"}
+             "audit_notapplied",
+             # Run by hand; nothing imports it.
+             "count_applied"}
 
     mods, imports = {}, {}
     for p in _iter_py():

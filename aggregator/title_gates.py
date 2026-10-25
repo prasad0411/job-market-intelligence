@@ -27,6 +27,10 @@ import re
 
 # ── term ─────────────────────────────────────────────────────────────────────
 
+# Full-time only: no further internship or co-op is possible after the
+# GSK co-op (Jan to Jul 2027) and May 2027 graduation.
+FULL_TIME_ONLY = True
+
 _INTERNISH = re.compile(r"\b(intern|internship|co-?op|summer\s+analyst)\b", re.I)
 
 _BAD_TERM = re.compile(
@@ -50,11 +54,18 @@ def is_wrong_term(title):
     guessing would cost real jobs.
     """
     t = title or ""
-    # The intern check comes first, and it is not an optimisation.
+
+    # Full-time only from 24 Oct 2026. The GSK co-op runs Jan to Jul 2027 and
+    # graduation is May 2027, so no further internship or co-op is possible
+    # whatever term it names. Set this back to False to collect them again.
+    if FULL_TIME_ONLY and _INTERNISH.search(t):
+        return True
+
+    # Below here only matters when FULL_TIME_ONLY is off.
     #
-    # Graduation is May 2027, so a FULL-TIME role starting Summer 2027 is
-    # correct: it begins after the degree finishes. Only an INTERNSHIP in
-    # that term is impossible, because the candidate is no longer enrolled.
+    # The intern check comes first, and it is not an optimisation. A
+    # FULL-TIME role starting Summer 2027 is correct: it begins after the
+    # degree finishes. Only an INTERNSHIP in that term is impossible.
     #
     # A previous version dropped this guard and rejected on a dated season
     # alone, which threw out every full-time posting advertising a summer
