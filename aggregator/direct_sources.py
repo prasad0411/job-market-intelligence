@@ -196,6 +196,22 @@ def _fetch_json(url: str, timeout: int = 5) -> Optional[dict]:
         return None
 
 
+# 341 extra boards verified live on 25 Oct 2026 by probing every company
+# already in the sheet against the keyless Greenhouse, Lever, Ashby and
+# Workable endpoints. Kept in their own module so these lists stay readable.
+try:
+    from aggregator.ats_slugs_extra import (
+        GREENHOUSE_EXTRA, LEVER_EXTRA, ASHBY_EXTRA, WORKABLE_EXTRA)
+    for _src, _dst in ((GREENHOUSE_EXTRA, GREENHOUSE_COMPANIES),
+                       (LEVER_EXTRA, LEVER_COMPANIES),
+                       (ASHBY_EXTRA, ASHBY_COMPANIES)):
+        for _k, _v in _src.items():
+            _dst.setdefault(_k, _v)
+except Exception as _e:
+    import logging as _lg
+    _lg.warning("extra ATS slugs not loaded: %s", _e)
+
+
 def _is_intern_or_newgrad(title: str) -> bool:
     """Check if title is intern/new-grad OR entry-level full-time (not senior)."""
     if not _INTERN_KW.search(title):
