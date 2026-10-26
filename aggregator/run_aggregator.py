@@ -991,7 +991,7 @@ class UnifiedJobAggregator:
                     source=j.get("source", "Unknown"),
                     outcome="valid",
                     resume_type=j.get("resume_type", "SDE"),
-                    job_type=j.get("job_type", "Internship"),
+                    job_type=j.get("job_type", "Full Time"),
                     job_id=j.get("job_id", "N/A"),
                     remote=j.get("remote", "Unknown"),
                     sponsorship=j.get("sponsorship", "Unknown"),
@@ -1007,7 +1007,7 @@ class UnifiedJobAggregator:
                     source=d.get("source", "Unknown"),
                     outcome="discarded",
                     rejection_reason=d.get("reason", ""),
-                    job_type=d.get("job_type", "Internship"),
+                    job_type=d.get("job_type", "Full Time"),
                     job_id=d.get("job_id", "N/A"),
                     entry_date=d.get("entry_date", ""),
                 ))

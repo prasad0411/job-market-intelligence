@@ -475,7 +475,7 @@ def scrape_workday() -> List[Dict]:
     """Fetch intern/new-grad jobs from Workday company search APIs."""
     jobs = []
     for company_name, (domain, tenant, site) in WORKDAY_COMPANIES.items():
-        for query in ["software engineer intern", "data science intern", "machine learning intern"]:
+        for query in ["software engineer", "data engineer", "machine learning engineer"]:
             url = f"https://{domain}/wday/cxs/{tenant}/{site}/jobs"
             payload = json.dumps({
                 "appliedFacets": {},
@@ -561,7 +561,7 @@ def scrape_smartrecruiters() -> List[Dict]:
     """Fetch intern/new-grad jobs from SmartRecruiters company APIs."""
     jobs = []
     for company_id, company_name in SMARTRECRUITERS_COMPANIES.items():
-        for query in ["intern", "co-op", "new grad", "entry level", "junior"]:
+        for query in ["new grad", "entry level", "junior", "software engineer"]:
             data = _fetch_json(
                 f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings?limit=50&q={query}",
                 timeout=8
@@ -712,7 +712,7 @@ def _workday_fetch(tenant, wd, site, query, limit=20):
 def scrape_workday_tenants() -> List[Dict]:
     """Fetch entry-level jobs from discovered Workday tenants."""
     jobs = []
-    queries = ["software engineer", "intern", "new grad", "data engineer"]
+    queries = ["software engineer", "new grad", "data engineer", "backend engineer"]
     for key, company_name in WORKDAY_TENANTS.items():
         try:
             tenant, wd, site = key.split("|")
