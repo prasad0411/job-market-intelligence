@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import contextlib
 import re
 import json
 import logging
@@ -416,6 +417,12 @@ def _is_hardware_discipline(title):
     if any(_r.search(_t) for _r in _HW_RESCUE_RE):
         return False
     return any(_d.search(_t) for _d in _HW_RE)
+
+
+try:
+    from aggregator.title_gates import FULL_TIME_ONLY as _FULL_TIME_ONLY
+except Exception:
+    _FULL_TIME_ONLY = False
 
 
 class TitleProcessor:
@@ -1216,6 +1223,17 @@ class TitleProcessor:
                         return True, "⚠️ GRADUATE - CONFLICTING SIGNALS"
                     return True, None
 
+        # Full time only: failing the internship test is no longer a
+        # rejection. Senior titles still fail here, because callers treat a
+        # True from this gate as "keep" and seniority must stay enforced.
+        if _FULL_TIME_ONLY:
+            _senior = False
+            with contextlib.suppress(Exception):
+                from aggregator.run_aggregator import _is_senior_title
+                _senior = _is_senior_title(title)
+            if _senior:
+                return False, "Senior role"
+            return True, None
         return False, "Not internship/co-op role"
 
     @staticmethod
@@ -1226,6 +1244,11 @@ class TitleProcessor:
             PAGE_TEXT_STANDARD_SCAN = 5000
 
         title_lower = title.lower()
+
+        # Full time only: season gating applies to internship cohorts, not to
+        # full time roles, which start whenever the company needs them.
+        if _FULL_TIME_ONLY:
+            return True, ""
 
         # Reject Spring explicitly in title — Spring 2026 is not Summer 2026
         if re.search(r"\bspring\s*20(?:2[5-9]|3\d)\b", title_lower):
