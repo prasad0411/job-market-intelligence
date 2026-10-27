@@ -201,10 +201,14 @@ def _fetch_json(url: str, timeout: int = 5) -> Optional[dict]:
 # Workable endpoints. Kept in their own module so these lists stay readable.
 try:
     from aggregator.ats_slugs_extra import (
-        GREENHOUSE_EXTRA, LEVER_EXTRA, ASHBY_EXTRA, WORKABLE_EXTRA)
+        GREENHOUSE_EXTRA, LEVER_EXTRA, ASHBY_EXTRA, WORKABLE_EXTRA,
+        GREENHOUSE_ROUND2, LEVER_ROUND2, ASHBY_ROUND2)
     for _src, _dst in ((GREENHOUSE_EXTRA, GREENHOUSE_COMPANIES),
                        (LEVER_EXTRA, LEVER_COMPANIES),
-                       (ASHBY_EXTRA, ASHBY_COMPANIES)):
+                       (ASHBY_EXTRA, ASHBY_COMPANIES),
+                       (GREENHOUSE_ROUND2, GREENHOUSE_COMPANIES),
+                       (LEVER_ROUND2, LEVER_COMPANIES),
+                       (ASHBY_ROUND2, ASHBY_COMPANIES)):
         for _k, _v in _src.items():
             _dst.setdefault(_k, _v)
 except Exception as _e:
