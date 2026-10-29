@@ -298,6 +298,8 @@ def check_orphaned_modules():
              "export_snapshot",
              # Run by hand; nothing imports it.
              "audit_notapplied",
+             # Reference data loader; used by the ranker.
+             "h1b_sponsors",
              # Run by hand; nothing imports it.
              "count_applied"}
 
