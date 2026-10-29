@@ -300,6 +300,8 @@ def check_orphaned_modules():
              "audit_notapplied",
              # Reference data loader; used by the ranker.
              "h1b_sponsors",
+             # Run by hand or by the scheduler.
+             "rank_by_sponsorship",
              # Run by hand; nothing imports it.
              "count_applied"}
 
