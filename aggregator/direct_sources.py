@@ -216,8 +216,55 @@ except Exception as _e:
     _lg.warning("extra ATS slugs not loaded: %s", _e)
 
 
+# A board that returns its landing page or an error instead of job data still
+# yields a "title", scraped from that page. Twenty two rows reached the sheet
+# that way: "403 ERROR", "Jobopenings", "Available Positions", "www.vml.com",
+# "Kelso Industries Careers Portal". None of them are jobs.
+_JUNK_TITLE = re.compile(
+    r"^\s*(?:\d{3}\s*error"
+    r"|about(?:\s+us)?"
+    r"|working"
+    r"|job\s*openings?"
+    r"|(?:open|available|current)\s+(?:positions?|roles?|jobs?|openings?)"
+    r"|find\s+your\s+role"
+    r"|grow\s+your\s+career"
+    r"|we\s*'?re\s+hiring"
+    r"|join\s+(?:us|our\s+team)"
+    r"|careers?(?:\s+portal|\s+page|\s+site)?"
+    r"|home"
+    r"|search\s+jobs?"
+    r")\b", re.I)
+
+_JUNK_DOMAIN = re.compile(
+    r"^\s*(?:https?://)?(?:www\.)?[a-z0-9-]+\.(?:com|io|ai|co|net|org)\b", re.I)
+_JUNK_CAREERS_TAIL = re.compile(r"\bcareers?(?:\s+portal|\s+page|\s+site)?\s*$", re.I)
+_REAL_ROLE_WORD = re.compile(
+    r"\b(engineer|developer|scientist|analyst|manager|architect|designer)\b", re.I)
+
+
+def _is_junk_title(title: str, company: str = "") -> bool:
+    """True when the board returned a page rather than a job."""
+    t = (title or "").strip()
+    if len(t) < 6:
+        return True
+    if _JUNK_DOMAIN.match(t):
+        return True
+    # A real role word rescues anything: "Careers Site Engineer" is a job.
+    if _JUNK_TITLE.match(t) and not _REAL_ROLE_WORD.search(t):
+        return True
+    if _JUNK_CAREERS_TAIL.search(t) and not _REAL_ROLE_WORD.search(t):
+        return True
+    if company:
+        _n = lambda x: re.sub(r"[^a-z0-9]", "", (x or "").lower())
+        if _n(t) == _n(company):
+            return True            # board name echoed back as the title
+    return False
+
+
 def _is_intern_or_newgrad(title: str) -> bool:
     """Check if title is intern/new-grad OR entry-level full-time (not senior)."""
+    if _is_junk_title(title):
+        return False
     if not _INTERN_KW.search(title):
         return False
     # Always allow explicit intern/new-grad even if oddly worded
