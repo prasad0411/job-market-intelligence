@@ -1115,6 +1115,7 @@ class UnifiedJobAggregator:
 
         logging.info(f"SUMMARY: {added_valid} valid, {added_discarded} discarded")
         self._log_run_to_db(added_valid, added_discarded, elapsed)
+        self._rank_after_write(added_valid)
 
         # ── Cumulative metrics tracking ──
         try:
@@ -1133,6 +1134,34 @@ class UnifiedJobAggregator:
             print(f"  📊 {_metrics.summary()}")
         except Exception as _me:
             logging.warning(f"Metrics recording failed: {_me}")
+
+    def _rank_after_write(self, added_valid):
+        """Order the unapplied rows by sponsorship, right after a write.
+
+        Ranking used to be a manual script, so new rows landed at the bottom
+        whatever the employer's visa record. Running it here means the sheet
+        is sorted whenever it is opened.
+
+        Skipped when nothing was added, since the order cannot have changed.
+        Failure here never fails the run: collecting the jobs is the job,
+        ordering them is a convenience.
+        """
+        if not added_valid:
+            return
+        try:
+            import subprocess
+            import sys as _s
+            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            _script = os.path.join(_root, "scripts", "rank_by_sponsorship.py")
+            if not os.path.exists(_script):
+                return
+            r = subprocess.run([_s.executable, _script, "--apply"],
+                               capture_output=True, text=True, timeout=300,
+                               cwd=_root)
+            tail = (r.stdout or "").strip().splitlines()[-1:] or [""]
+            logging.info("Sponsorship ranking: %s", tail[0][:90])
+        except Exception as e:
+            logging.warning("sponsorship ranking skipped: %s", str(e)[:70])
 
     def _log_run_to_db(self, valid, discarded, elapsed_seconds):
         """Append this run's stats to .local/run_history.db for trend analysis."""
