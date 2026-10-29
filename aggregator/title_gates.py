@@ -165,6 +165,11 @@ _HW_SOFT = (
     "environmental engineer", "quality engineer", "qms",
     "reliability engineer", "quality assurance engineer",
     "mechanical design", "optics engineer",
+    # Bare "hardware" rejects chip and board roles, while the rescue list
+    # below keeps software, firmware, devops and SRE roles on hardware
+    # teams. Checked against 16,602 distinct titles: 13 rejected, 13 kept,
+    # none of them previously applied to.
+    "hardware",
 )
 
 _HW_RESCUE = (
