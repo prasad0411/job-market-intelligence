@@ -34,7 +34,9 @@ FULL_TIME_ONLY = True
 # "NVIDIA 2027 Internships" and "Summer Co op" slipped through: the old
 # pattern missed the plural and the space-separated co op.
 _INTERNISH = re.compile(
-    r"\b(intern|interns|internship|internships|co[-\s]?op|co[-\s]?ops"
+    # co[\s-]*ops? so "Co - Op" with spaces around the hyphen matches too:
+    # four real co ops reached the sheet spelled that way.
+    r"\b(intern|interns|internship|internships|co[\s-]*ops?"
     r"|summer\s+analyst|future\s+talent)\b", re.I)
 
 _BAD_TERM = re.compile(
