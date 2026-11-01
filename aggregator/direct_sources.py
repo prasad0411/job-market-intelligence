@@ -196,24 +196,6 @@ def _fetch_json(url: str, timeout: int = 5) -> Optional[dict]:
         return None
 
 
-# 341 extra boards verified live on 25 Oct 2026 by probing every company
-# already in the sheet against the keyless Greenhouse, Lever, Ashby and
-# Workable endpoints. Kept in their own module so these lists stay readable.
-try:
-    from aggregator.ats_slugs_extra import (
-        GREENHOUSE_EXTRA, LEVER_EXTRA, ASHBY_EXTRA, WORKABLE_EXTRA,
-        GREENHOUSE_ROUND2, LEVER_ROUND2, ASHBY_ROUND2)
-    for _src, _dst in ((GREENHOUSE_EXTRA, GREENHOUSE_COMPANIES),
-                       (LEVER_EXTRA, LEVER_COMPANIES),
-                       (ASHBY_EXTRA, ASHBY_COMPANIES),
-                       (GREENHOUSE_ROUND2, GREENHOUSE_COMPANIES),
-                       (LEVER_ROUND2, LEVER_COMPANIES),
-                       (ASHBY_ROUND2, ASHBY_COMPANIES)):
-        for _k, _v in _src.items():
-            _dst.setdefault(_k, _v)
-except Exception as _e:
-    import logging as _lg
-    _lg.warning("extra ATS slugs not loaded: %s", _e)
 
 
 # A board that returns its landing page or an error instead of job data still
@@ -968,3 +950,30 @@ if __name__ == "__main__":
     print(f"\nSample jobs:")
     for j in jobs[:10]:
         print(f"  {j['company']:20s} | {j['title'][:40]:40s} | {j['location'][:20]:20s} | {j['source']}")
+
+# ── extra ATS boards ─────────────────────────────────────────────────────────
+# At module end on purpose: this merges into every company dict above, so it
+# cannot run before they are all defined. Placing it mid file silently
+# disabled every extra board, including the ones already working.
+# 341 extra boards verified live on 25 Oct 2026 by probing every company
+# already in the sheet against the keyless Greenhouse, Lever, Ashby and
+# Workable endpoints. Kept in their own module so these lists stay readable.
+try:
+    from aggregator.ats_slugs_extra import (
+        GREENHOUSE_EXTRA, LEVER_EXTRA, ASHBY_EXTRA, WORKABLE_EXTRA,
+        GREENHOUSE_ROUND2, LEVER_ROUND2, ASHBY_ROUND2,
+        WORKABLE_ROUND3, SMARTRECRUITERS_ROUND3, RIPPLING_ROUND3)
+    for _src, _dst in ((GREENHOUSE_EXTRA, GREENHOUSE_COMPANIES),
+                       (LEVER_EXTRA, LEVER_COMPANIES),
+                       (ASHBY_EXTRA, ASHBY_COMPANIES),
+                       (GREENHOUSE_ROUND2, GREENHOUSE_COMPANIES),
+                       (LEVER_ROUND2, LEVER_COMPANIES),
+                       (ASHBY_ROUND2, ASHBY_COMPANIES),
+                       (WORKABLE_ROUND3, WORKABLE_COMPANIES),
+                       (SMARTRECRUITERS_ROUND3, SMARTRECRUITERS_COMPANIES),
+                       (RIPPLING_ROUND3, RIPPLING_COMPANIES)):
+        for _k, _v in _src.items():
+            _dst.setdefault(_k, _v)
+except Exception as _e:
+    import logging as _lg
+    _lg.warning("extra ATS slugs not loaded: %s", _e)
