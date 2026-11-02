@@ -318,6 +318,19 @@ class DiscardedAuditor:
             if any(dc in co_lower for dc in _ALWAYS_CLEARANCE):
                 continue  # Known clearance company — do NOT rescue
 
+            # ── CHECK 0c: Never rescue what the current filter rejects ──
+            # The six rescue branches below all predate the full time switch
+            # and none of them re check the title. On 2 Nov that reintroduced
+            # about 60 internships and co ops the gates had just removed.
+            # Rescue exists to correct false positives, not to bypass the
+            # filter, so the filter runs first.
+            try:
+                from aggregator.processors import TitleProcessor as _TP
+                if title and not _TP.is_cs_engineering_role(title, ""):
+                    continue
+            except Exception as _ge:
+                log.debug("rescue gate check failed for %r: %s", title, _ge)
+
             # ── CHECK 1: Clearance false positive ──
             if "clearance" in reason.lower() or "security" in reason.lower():
                 if any(tc in co_lower or co_lower in tc for tc in no_clearance):
