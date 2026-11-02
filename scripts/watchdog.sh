@@ -94,6 +94,47 @@ for JOB_DEF in "${JOBS[@]}"; do
     fi
 done
 
+# ── stalled run detector ────────────────────────────────────────────────────
+# The health file checks above only see a run that FINISHED. A run that hangs
+# never writes one, so it was invisible here: on 1 Nov the aggregator sat for
+# 14.5 hours holding the lock while this watchdog ran 29 times and did
+# nothing. The in process watchdog warns but does not kill, and the timeout
+# wrapper cannot fire because its alarm does not advance while the laptop
+# sleeps.
+#
+# Log file mtime is the honest progress signal. These modules log constantly,
+# so 45 minutes of silence from a live process means it is stuck.
+STALL_SECONDS=2700
+
+check_stalled() {
+    local module=$1 pattern=$2
+    local newest pids age
+    newest=$(ls -t "$LOCAL/cron_logs/${module}_"*.log 2>/dev/null | head -1)
+    [[ -z "$newest" ]] && return
+    pids=$(pgrep -f "$pattern" 2>/dev/null)
+    [[ -z "$pids" ]] && return
+    age=$(( NOW - $(stat -f %m "$newest" 2>/dev/null || echo "$NOW") ))
+    if [[ $age -ge $STALL_SECONDS ]]; then
+        log "  [stall] $module silent ${age}s while running - killing $pids"
+        alert "$module hung ${age}s - killed so the next run can start"
+        # shellcheck disable=SC2086
+        kill $pids 2>/dev/null
+        sleep 5
+        pids=$(pgrep -f "$pattern" 2>/dev/null)
+        # shellcheck disable=SC2086
+        [[ -n "$pids" ]] && kill -9 $pids 2>/dev/null
+        rm -f "$LOCAL/${module}.lock" 2>/dev/null
+    else
+        log "  [stall] $module ok, wrote ${age}s ago"
+    fi
+}
+
+log "[stall] Checking for hung runs..."
+check_stalled "aggregator" "python3 -m aggregator"
+check_stalled "outreach" "python3 -m outreach"
+check_stalled "send_scheduled" "send_scheduled.py"
+check_stalled "cleanup_not_applied" "cleanup_not_applied.py"
+
 # Docker/Reacher check
 log "[docker] Checking Reacher..."
 if docker ps 2>/dev/null | grep -q "reacher"; then
