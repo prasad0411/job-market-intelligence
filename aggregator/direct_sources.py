@@ -224,6 +224,32 @@ _REAL_ROLE_WORD = re.compile(
     r"\b(engineer|developer|scientist|analyst|manager|architect|designer)\b", re.I)
 
 
+# The ATS puts the requisition id in the URL. Workday's API only returns it
+# in bulletFields, which many tenants leave empty, so rows stored "N/A" while
+# the id sat in plain sight in the link: KLA 2642339, Salesforce JR365146.
+_JOB_ID_PATS = [
+    re.compile(r"[?&]gh_jid=(\d+)"),
+    re.compile(r"job-boards\.greenhouse\.io/[^/]+/jobs/(\d+)"),
+    re.compile(r"greenhouse\.io/[^/]+/jobs/(\d+)"),
+    re.compile(r"jobs\.lever\.co/[^/]+/([0-9a-f]{8}-[0-9a-f\-]{20,})"),
+    re.compile(r"jobs\.ashbyhq\.com/[^/]+/([0-9a-f]{8}-[0-9a-f\-]{20,})"),
+    re.compile(r"ats\.rippling\.com/[^/]+/jobs/([0-9a-f]{8}-[0-9a-f\-]{20,})"),
+    re.compile(r"smartrecruiters\.com/.*/postings/(\d+)"),
+    re.compile(r"amazon\.jobs/en/jobs/(\d+)"),
+    re.compile(r"myworkdayjobs\.com/.*_([A-Za-z0-9][A-Za-z0-9\-]{3,})(?:[/?#]|$)"),
+]
+
+
+def job_id_from_url(url: str) -> str:
+    """Requisition id parsed out of the posting URL, or "" if none is there."""
+    u = (url or "").split("?utm")[0]
+    for _p in _JOB_ID_PATS:
+        _m = _p.search(u)
+        if _m:
+            return _m.group(1)
+    return ""
+
+
 def _is_junk_title(title: str, company: str = "") -> bool:
     """True when the board returned a page rather than a job."""
     t = (title or "").strip()
@@ -318,7 +344,7 @@ def scrape_lever() -> List[Dict]:
                 "title": title,
                 "location": location,
                 "url": url,
-                "job_id": "N/A",
+                "job_id": job_id_from_url(url) or "N/A",
                 "source": "lever_direct",
                 "age": _pick_age(job, ("createdAt", "created_at")),
                 "is_closed": False,
@@ -353,7 +379,7 @@ def scrape_ashby() -> List[Dict]:
                 "title": title,
                 "location": location,
                 "url": url,
-                "job_id": "N/A",
+                "job_id": job_id_from_url(url) or "N/A",
                 "source": "ashby_direct",
                 "age": _pick_age(job, ("publishedAt", "updatedAt", "publishedDate")),
                 "is_closed": False,
@@ -421,7 +447,7 @@ def scrape_hackernews_hiring(max_comments: int = 100) -> List[Dict]:
                     "title": title[:80],
                     "location": location[:50],
                     "url": url,
-                    "job_id": "N/A",
+                    "job_id": job_id_from_url(url) or "N/A",
                     "source": "hackernews_hiring",
                     "age": "0d",
                     "is_closed": False,
@@ -694,7 +720,7 @@ def scrape_workable() -> List[Dict]:
                 "title": title,
                 "location": location,
                 "url": url,
-                "job_id": str(job.get("shortcode", "N/A")),
+                "job_id": str(job.get("shortcode") or job_id_from_url(url) or "N/A"),
                 "source": "workable_direct",
                 "age": _pick_age(job, ("published_on", "created_at")),
                 "is_closed": False,
@@ -787,7 +813,10 @@ def scrape_workday_tenants() -> List[Dict]:
                     "title": title,
                     "location": loc,
                     "url": f"https://{tenant}.{wd}.myworkdayjobs.com/{site}{path}",
-                    "job_id": str(bullets[0]) if bullets else "N/A",
+                    "job_id": (str(bullets[0]) if bullets else
+                               job_id_from_url(
+                                   f"https://{tenant}.{wd}.myworkdayjobs.com/{site}{path}")
+                               or "N/A"),
                     "source": "workday_tenant",
                     "age": _pick_age(jp, ("startDate",), fallback_key="postedOn"),
                     "is_closed": False,
