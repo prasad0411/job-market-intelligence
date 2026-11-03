@@ -3968,18 +3968,24 @@ class UnifiedJobAggregator:
             # ── H1B sponsorship detection from company name + JD text ──
             _sponsorship = "Unknown"
             try:
-                from aggregator.config import H1B_KNOWN_SPONSORS, H1B_NO_SPONSOR, H1B_SPONSOR_JD_YES, H1B_SPONSOR_JD_NO
+                from aggregator.config import H1B_NO_SPONSOR, H1B_SPONSOR_JD_YES, H1B_SPONSOR_JD_NO
                 _co_lower = company.lower().strip()
                 # Check company lists first
                 # Exact word match to avoid false positives (e.g. 'meta' matching 'metadata')
                 _co_words = set(_co_lower.split())
                 _co_norm = re.sub(r"[^a-z0-9 ]", "", _co_lower).strip()
-                if _co_norm in H1B_KNOWN_SPONSORS or any(
-                    s == _co_norm or (_co_norm.startswith(s + " ") or _co_norm.endswith(" " + s))
-                    for s in H1B_KNOWN_SPONSORS if len(s) > 3
-                ):
-                    _sponsorship = "Yes"
-                elif _co_norm in H1B_NO_SPONSOR or any(
+                # This column is about THIS POSTING, so the page decides.
+                #
+                # A company level Yes used to win here and skip the page
+                # check entirely, so a posting that said "not eligible for
+                # visa sponsorship" at a listed company still showed Yes.
+                # 26 rows were at risk of exactly that.
+                #
+                # Company level survives only as a hard No, for employers
+                # that never sponsor at all, such as federal contractors.
+                # Yes now comes only from the posting itself, so Yes means
+                # the page said so, and Unknown means it did not say.
+                if _co_norm in H1B_NO_SPONSOR or any(
                     s == _co_norm or (_co_norm.startswith(s + " ") or _co_norm.endswith(" " + s))
                     for s in H1B_NO_SPONSOR if len(s) > 3
                 ):

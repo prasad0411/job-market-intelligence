@@ -80,21 +80,28 @@ def main():
         print("nothing to reorder")
         return 0
 
+    # The Sponsorship column is about THIS posting and leads the sort:
+    # Yes means the page said it sponsors, No means the page said it does
+    # not, Unknown means nobody read the page. Within each group, employers
+    # that file more H1B petitions come first.
+    _POSTING_RANK = {"yes": 0, "unknown": 1, "": 1, "no": 2}
+
     def score(r):
+        posting = _POSTING_RANK.get(cell(r, "Sponsorship").lower(), 1)
         tier, pos, _m = lookup(cell(r, "Company"))
-        if cell(r, "Sponsorship").lower() == "no":
-            tier, pos = 5, 0
         # -pos so more filings sort first; company and title keep it stable
-        return (tier, -pos, cell(r, "Company").lower(), cell(r, "Title").lower())
+        return (posting, tier, -pos,
+                cell(r, "Company").lower(), cell(r, "Title").lower())
 
     movable = sorted((body[i] for i in movable_idx), key=score)
 
     print("=" * 78)
     print("SPONSORSHIP RANKING: %d movable of %d rows" % (len(movable_idx), len(body)))
     print("=" * 78)
+    POSTING_NAME = {0: "posting says yes", 1: "posting unknown", 2: "posting says no"}
     dist = collections.Counter(score(r)[0] for r in movable)
     for t in sorted(dist):
-        print("   %-16s %4d" % (TIER_NAME[t], dist[t]))
+        print("   %-18s %4d" % (POSTING_NAME[t], dist[t]))
 
     # how far anything actually moves, so a no-op run is visible as one
     moved = sum(1 for slot, r in zip(movable_idx, movable) if body[slot] is not r)
@@ -102,9 +109,10 @@ def main():
 
     print("\ntop 12 after ranking:")
     for r in movable[:12]:
-        t, np_, _c, _ti = score(r)
-        print("   %-15s %-22s %-38s %5d"
-              % (TIER_NAME[t], cell(r, "Company")[:22], cell(r, "Title")[:38], -np_))
+        posting, tier, np_, _c, _ti = score(r)
+        print("   %-17s %-14s %-22s %-32s %5d"
+              % (POSTING_NAME[posting], TIER_NAME[tier],
+                 cell(r, "Company")[:22], cell(r, "Title")[:32], -np_))
 
     if not a.apply:
         print("\nDRY RUN - nothing written. Re-run with --apply.")
