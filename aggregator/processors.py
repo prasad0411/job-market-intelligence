@@ -477,7 +477,18 @@ class TitleProcessor:
             # Only strip if remainder looks like a job title (has job words)
             _job_words = {"intern", "engineer", "developer", "analyst", "scientist", "manager",
                           "designer", "architect", "specialist", "associate", "coordinator"}
-            if any(w in _remainder.lower() for w in _job_words):
+            # A prefix that is itself a role word belongs to the title, not
+            # to a company. "Intern - System Engineer, HBM" matched this
+            # pattern, so Intern was stripped as if it were a company and
+            # the term gate never saw an internship. Two Micron internships
+            # reached the sheet labelled Full Time that way.
+            _role_prefix = _prefix_re.match(
+                r"^(?:intern(?:ship)?s?|co[\s-]*ops?|graduate|new\s+grad|grad"
+                r"|apprentice|trainee|fellow|summer|fall|spring|winter|senior"
+                r"|junior|staff|principal|lead|associate)$",
+                title.split(":")[0].split(" - ")[0].split(" \u2013 ")[0].strip(),
+                _prefix_re.I)
+            if any(w in _remainder.lower() for w in _job_words) and not _role_prefix:
                 title = _remainder
 
         # Strip duration suffixes: "- 4 months", "- 12 weeks", "(8 months)"
