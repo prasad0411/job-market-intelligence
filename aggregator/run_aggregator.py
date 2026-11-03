@@ -416,6 +416,17 @@ def _feed_sponsorship(job, default="Unknown"):
     return default
 
 
+# Experience requirements, read from the job page. Prasad has about two
+# years plus an MS, so a posting asking for more than three is not a fit.
+# The smallest number in the posting is the real ask: "4-7 years" means 4.
+_MAX_YEARS_EXPERIENCE = 3
+_MIN_YEARS_PATS = [
+    re.compile(r"(\d{1,2})\s*\+?\s*(?:to|-|\u2013|\u2014)\s*\d{1,2}\s*\+?\s*years?", re.I),
+    re.compile(r"(?:minimum|at\s+least|min\.?)\s+(?:of\s+)?(\d{1,2})\s*\+?\s*years?", re.I),
+    re.compile(r"(\d{1,2})\s*\+\s*years?", re.I),
+]
+
+
 _SENIOR_TITLE_RE = re.compile(
     r"\b(?:senior|sr\.?|staff|principal|lead|manager|director|head\s+of|"
     r"vp|vice\s+president|architect|distinguished|fellow|chief)\b", re.I)
@@ -3939,6 +3950,24 @@ class UnifiedJobAggregator:
                         r"(?:secret|top secret)\s+clearance\s+(?:required|needed|mandatory)",
                     ]
                     _page_text = soup.get_text()[:10000].lower()
+
+                    # Years of experience. A Salesforce posting asking for
+                    # "roughly 4-7 years" reached the sheet: nothing in the
+                    # pipeline read experience requirements at all. Take the
+                    # SMALLEST number the posting asks for, since a 4-7 range
+                    # really asks for 4, and reject above the threshold.
+                    _min_found = []
+                    for _yp in _MIN_YEARS_PATS:
+                        _min_found += [int(_m) for _m in _yp.findall(_page_text)]
+                    if _min_found and min(_min_found) > _MAX_YEARS_EXPERIENCE:
+                        _lo = min(_min_found)
+                        _why = "Needs %d+ years of experience (JD)" % _lo
+                        self._add_discarded(company, title, location_hint or "Unknown",
+                            "Unknown", final_url or url, "N/A", "Full Time", source, _why)
+                        self._print_rejected(company, _why)
+                        logging.info(f"REJECTED | {company} | {title} | {_lo}+ yrs in JD")
+                        return
+
                     for _clr_pat in _clearance_pats:
                         if re.search(_clr_pat, _page_text, re.I):
                             self._add_discarded(company, title, location_hint or "Unknown", "Unknown",
