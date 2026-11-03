@@ -202,10 +202,28 @@ def is_hardware_discipline_v2(title):
 
 # ── one entry point ──────────────────────────────────────────────────────────
 
+# Graduation is May 2027, so a role that names an earlier class year has
+# already started or starts before availability. Keep anything that names
+# 2027 or later, or names no year at all: a bare "New College Grad" is
+# open and we fail open on it.
+GRAD_FROM_YEAR = 2027
+_TITLE_YEAR = re.compile(r"\b(20[2-3]\d)\b")
+
+
+def wrong_grad_year(title):
+    """True when every year the title names is already past."""
+    years = [int(y) for y in _TITLE_YEAR.findall(title or "")]
+    if not years:
+        return False
+    return max(years) < GRAD_FROM_YEAR
+
+
 def rejection_reason(title):
     """Why this title is out, or None to let it continue to the scoring."""
     if needs_citizenship(title):
         return "citizenship or clearance required"
+    if wrong_grad_year(title):
+        return "class year is before graduation"
     if is_wrong_term(title):
         return "term starts after graduation"
     if is_business_role(title):
