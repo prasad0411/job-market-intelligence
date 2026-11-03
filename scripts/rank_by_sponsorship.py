@@ -164,7 +164,33 @@ def main():
               % (len(bad), bad[0] + 2))
         return 1
     print("verified: every Applied and Rejected row is unmoved")
+    _renumber(ws, header, after)
     return 0
+
+
+def _renumber(ws, header, body):
+    """Make Sr. No. the row's position again.
+
+    It is written once at insert and never corrected, so every archived row
+    left a hole and every re-ranking shuffled the labels: 47 values were
+    duplicated across 96 rows. Rewriting the column after a reorder keeps it
+    a true 1..N index.
+    """
+    if "Sr. No." not in {n: i for i, n in enumerate(header) if n}:
+        return
+    col = header.index("Sr. No.")
+    letter = col_letter(col)
+    want = [str(i) for i in range(1, len(body) + 1)]
+    have = [r[col].strip() if len(r) > col else "" for r in body]
+    if have == want:
+        print("Sr. No. already 1..%d" % len(want))
+        return
+    try:
+        ws.update(range_name="%s2:%s%d" % (letter, letter, len(body) + 1),
+                  values=[[v] for v in want], value_input_option="USER_ENTERED")
+        print("renumbered Sr. No. 1..%d" % len(want))
+    except Exception as e:
+        print("renumber skipped: %s" % str(e)[:70])
 
 
 if __name__ == "__main__":
