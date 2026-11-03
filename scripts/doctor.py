@@ -162,11 +162,16 @@ def inspect(path):
     a = sum(int(x) for x in _ANNOUNCED.findall(txt))
     c = sum(int(x) for x in _CONFIRMED.findall(txt))
 
+    # _extra survives every return path. These two branches used to drop it,
+    # so a run that logged an error lost its CLOCK data and the ceiling check
+    # fell back to wall-clock: the 1 Nov run reported "71338s active" when
+    # the log plainly said active 10144s, slept 61193s.
     if code in (124, 137):
-        return {"state": BAD, "note": "killed on timeout", "exit": code, "dur": dur}
+        return dict({"state": BAD, "note": "killed on timeout",
+                     "exit": code, "dur": dur}, **_extra)
     if marks:
-        return {"state": BAD, "note": "error in log despite exit %d" % code,
-                "exit": code, "dur": dur}
+        return dict({"state": BAD, "note": "error in log despite exit %d" % code,
+                     "exit": code, "dur": dur}, **_extra)
     if a and a != c:
         return {"state": BAD, "note": "announced %d, confirmed %d" % (a, c),
                 "exit": code, "dur": dur}
