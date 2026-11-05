@@ -427,6 +427,13 @@ _MIN_YEARS_PATS = [
 ]
 
 
+try:
+    from aggregator.title_gates import FULL_TIME_ONLY as _FTO
+except Exception:
+    _FTO = False
+_DEFAULT_JOB_TYPE = "Full Time" if _FTO else "Internship"
+
+
 _SENIOR_TITLE_RE = re.compile(
     r"\b(?:senior|sr\.?|staff|principal|lead|manager|director|head\s+of|"
     r"vp|vice\s+president|architect|distinguished|fellow|chief)\b", re.I)
@@ -2906,7 +2913,13 @@ class UnifiedJobAggregator:
             logging.info(f"LINKEDIN STEP 2 | Duplicate: {company} | {title}")
             return
 
-        job_type = "Internship"  # Default, overridden to "Full Time" for new grad
+        # The default used to be "Internship", overridden to "Full Time" by
+        # the branch below. That branch runs only when is_internship_role is
+        # False, and under FULL_TIME_ONLY that function now returns True for
+        # everything, so the override became unreachable and 26 full time
+        # LinkedIn rows were labelled Internship. The default has to follow
+        # the mode, not sit frozen from the internship era.
+        job_type = _DEFAULT_JOB_TYPE
         is_internship, intern_reason = TitleProcessor.is_internship_role(title)
         if not is_internship:
             # Also accept new grad / entry-level roles from LinkedIn
@@ -3737,7 +3750,18 @@ class UnifiedJobAggregator:
                 )
                 _is_intern, _ = TitleProcessor.is_internship_role(title, github_category="Software Engineering Internship")
                 _is_valid, _ = TitleProcessor.is_valid_job_title(title)
-                if (_is_headline or not _is_intern or not _is_valid) and _hint_intern and _hint_valid:
+                # "not _is_intern" was the signal that the page title was
+                # wrong. Under FULL_TIME_ONLY is_internship_role returns True
+                # for everything, so that condition died and junk page titles
+                # like "403 ERROR" or "Jobopenings" stopped triggering the
+                # hint override. The junk check is the better signal anyway.
+                try:
+                    from aggregator.direct_sources import _is_junk_title
+                    _junk_page_title = _is_junk_title(title, company or "")
+                except Exception:
+                    _junk_page_title = False
+                if ((_is_headline or _junk_page_title or not _is_intern
+                     or not _is_valid) and _hint_intern and _hint_valid):
                     logging.info(f"Title override: page={title!r} hint={title_hint!r}")
                     title = _hint_clean
 
