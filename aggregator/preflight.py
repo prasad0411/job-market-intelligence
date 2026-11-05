@@ -302,6 +302,8 @@ def check_orphaned_modules():
              "h1b_sponsors",
              # Run by hand or by the scheduler.
              "rank_by_sponsorship",
+             # Run daily by selfcheck.sh.
+             "consistency_check",
              # Run by hand; nothing imports it.
              "count_applied"}
 

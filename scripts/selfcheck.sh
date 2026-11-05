@@ -71,6 +71,19 @@ if [[ -f "$BASE/scripts/verify_fixes.py" ]]; then
     fi
 fi
 
+# Compare what the sheet says against what the gates say. Every bug found on
+# 2 and 3 Nov was a default that outlived its reason and failed silently: a
+# Job Type frozen from the internship era, a cleaner that stripped the word
+# a gate needed, a rescue path that skipped the filter. Each one showed up
+# as a stored value disagreeing with a live gate verdict.
+if [[ -f "$BASE/scripts/consistency_check.py" ]]; then
+    if python3 "$BASE/scripts/consistency_check.py" >> "$LOG" 2>&1; then
+        say "consistency: all checks ok"
+    else
+        say "consistency: FINDINGS - see $LOG"
+    fi
+fi
+
 # ── 5. scheduler alive ──────────────────────────────────────────────────────
 # Captured first rather than piped: grep -q exits on the first match, which
 # sends SIGPIPE to launchctl, and with pipefail the pipeline then reports
