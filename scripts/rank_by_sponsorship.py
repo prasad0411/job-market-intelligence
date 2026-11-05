@@ -118,7 +118,12 @@ def main():
         print("\nDRY RUN - nothing written. Re-run with --apply.")
         return 0
     if moved == 0:
-        print("\nalready in order, nothing to write")
+        # The renumber runs even when the order is unchanged. Archiving rows
+        # leaves holes in Sr. No. without moving anything, so tying the
+        # renumber to a reorder meant a cleanup could break the index and
+        # the next run would skip right past it.
+        print("\nalready in order")
+        _renumber(ws, header, ws.get_all_values()[1:])
         return 0
 
     os.makedirs(SNAP_DIR, exist_ok=True)
