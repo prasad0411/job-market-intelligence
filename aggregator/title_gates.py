@@ -29,7 +29,10 @@ import re
 
 # Full-time only: no further internship or co-op is possible after the
 # GSK co-op (Jan to Jul 2027) and May 2027 graduation.
-FULL_TIME_ONLY = True
+# 12 Nov 2026: back on for a friend's search. Spring 2027 internships and
+# co-ops are collected again; the term gate below still drops Summer and
+# Fall 2027, which start after the May 2027 graduation.
+FULL_TIME_ONLY = False
 
 # "NVIDIA 2027 Internships" and "Summer Co op" slipped through: the old
 # pattern missed the plural and the space-separated co op.
