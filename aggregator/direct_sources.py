@@ -215,6 +215,13 @@ _JUNK_TITLE = re.compile(
     r"|careers?(?:\s+portal|\s+page|\s+site)?"
     r"|home"
     r"|search\s+jobs?"
+    # Session timeout and interstitial pages. Grant Thornton's board served
+    # "Are You Still With Us?" as a job title.
+    r"|are\s+you\s+still\s+with\s+us"
+    r"|session\s+(?:expired|timed?\s*out)"
+    r"|your\s+session"
+    r"|access\s+denied"
+    r"|page\s+not\s+found"
     r")\b", re.I)
 
 _JUNK_DOMAIN = re.compile(
