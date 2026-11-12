@@ -94,6 +94,13 @@ def is_wrong_term(title):
 
 _BIZ = (
     "sales development representative", "sales representative",
+    # "Sales Analytics Intern" passed because "analytics" is a technical
+    # keyword and no sales phrase matched it. A bare "sales" entry is not
+    # safe here: the list has no trailing word boundary, so it would also
+    # match "Salesforce Developer", which is a real target.
+    "sales analytics", "sales operations", "sales strategy",
+    "business information systems", "business operations",
+    "growth & development", "growth and development",
     "account executive", "account manager", "business development",
     "technical recruiter", "recruiter", "talent acquisition",
     "solutions engineer", "solution engineer", "partner solutions",
