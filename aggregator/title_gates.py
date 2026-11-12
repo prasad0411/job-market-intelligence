@@ -44,8 +44,12 @@ _INTERNISH = re.compile(
 
 _BAD_TERM = re.compile(
     r"\b(summer|fall|autumn)\s*(?:20)?2[7-9]\b"       # Summer 2027, Fall 28
-    r"|\b(?:20)?2[7-9]\s*(summer|fall|autumn)\b"      # 2027 Summer
-    r"|\bsummer\s+intern",                            # Summer Intern, no year
+    # "2027 (Summer)" wraps the season in brackets, so the year and the
+    # season are no longer adjacent; allow separators between them.
+    r"|\b(?:20)?2[7-9]\s*[\(\[\-:,\s]*\s*(summer|fall|autumn)\b"
+    # "Summer IT AI Intern" puts words between the season and the role.
+    # Four summer internships reached the sheet that way on 10 to 12 Nov.
+    r"|\b(summer|fall|autumn)\b[^|]{0,30}?\b(intern|internship|co[\s-]*op)\b",
     re.I)
 
 # An explicit Spring or January overrides, so "Spring 2027 Summer Analyst
