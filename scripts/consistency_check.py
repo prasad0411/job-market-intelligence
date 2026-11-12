@@ -68,7 +68,12 @@ def main():
     for r in rows:
         jt = cell(r, "Job Type").lower()
         t = cell(r, "Title")
-        gate_says_intern = bool(rejection_reason(t))
+        # rejection_reason only answered this while FULL_TIME_ONLY was on,
+        # when every internship was rejected outright. With the flag off it
+        # returns None for a legitimate Spring 2027 co-op, so the check read
+        # 27 correctly labelled rows as mislabelled. is_internship_role is
+        # what actually discriminates.
+        gate_says_intern = TP.is_internship_role(t)[0]
         if jt in ("internship", "co-op", "coop", "intership") and not gate_says_intern:
             hits.append((cell(r, "Company"), t, "labelled %s, gate says full time" % jt))
         elif jt == "full time" and gate_says_intern:

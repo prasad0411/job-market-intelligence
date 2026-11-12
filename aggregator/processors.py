@@ -1121,6 +1121,15 @@ class TitleProcessor:
 
     @staticmethod
     def is_internship_role(title, job_type="", page_text="", github_category=""):
+        # One pattern, two callers. This used to rely only on config's
+        # INTERNSHIP_INDICATORS, a separate list from _INTERNISH in
+        # title_gates, and the two drifted: "Co - Op: AI Engineer" with
+        # spaces around the hyphen was caught by one and missed by the other.
+        # Consult the shared pattern first so a fix in one place holds in both.
+        with contextlib.suppress(Exception):
+            from aggregator.title_gates import _INTERNISH
+            if _INTERNISH.search(title or ""):
+                return True, None
         try:
             from aggregator.config import (
                 VALID_INTERNSHIP_TYPES,
