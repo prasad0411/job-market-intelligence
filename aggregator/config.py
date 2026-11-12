@@ -2392,6 +2392,14 @@ TECHNICAL_ROLE_KEYWORDS = {
     "solutions",
     "infrastructure",
     "cybersecurity",
+    # Hands-on security roles the list missed. "Penetration Tester" and
+    # "Red Team Operator" are engineering work but carry no engineer or
+    # developer keyword, so they scored zero and were dropped. "pen"
+    # alone would match "open" and "pending", so these need the phrase.
+    "penetration test", "pentest", "pen test",
+    "red team", "blue team",
+    "incident response", "incident responder",
+    "threat hunt",
     "r&d",
     "llm",
     "nlp",
