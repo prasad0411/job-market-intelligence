@@ -40,7 +40,21 @@ def _get_token():
         cache.deserialize(open(MS_TOKEN_FILE).read())
     app = PublicClientApplication(MS_CLIENT_ID, authority=MS_AUTHORITY, token_cache=cache)
     accounts = app.get_accounts()
-    result = app.acquire_token_silent(MS_SCOPES, account=accounts[0]) if accounts else None
+    # The token fetch is a network call to login.microsoftonline.com and it
+    # raises on a timeout, so the run died before reaching any Graph call.
+    # Retry the network part only: an expired token returns a result with no
+    # access_token rather than raising, and retrying that achieves nothing.
+    result = None
+    if accounts:
+        for _attempt in range(3):
+            try:
+                result = app.acquire_token_silent(MS_SCOPES, account=accounts[0])
+                break
+            except Exception as _e:
+                if _attempt == 2:
+                    log.warning("token fetch failed after 3 attempts: %s", _e)
+                    raise
+                time.sleep(3 * (_attempt + 1))
     if not result or "access_token" not in result:
         raise Exception("MS token expired — run: python3 scripts/test_ms_auth.py")
     if cache.has_state_changed:
