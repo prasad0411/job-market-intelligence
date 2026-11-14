@@ -106,6 +106,30 @@ done
 # so 45 minutes of silence from a live process means it is stuck.
 STALL_SECONDS=2700
 
+# Sleep awareness. The detector judged log silence by wall clock, and this
+# laptop suspends constantly: on 14 Nov an aggregator run logged
+# "active 73s, slept 7181s" and was killed as hung while it was simply
+# asleep. 18 healthy runs were killed in 48 hours, and each kill made the
+# watchdog re-run the job, which is the re-run storm.
+#
+# The watchdog runs every 30 minutes. If the gap since its OWN last run is
+# much larger than that, the machine slept and log silence proves nothing,
+# so skip the kill for one round. A genuinely hung process is still silent
+# 30 minutes later, when the gap is normal again.
+WDOG_INTERVAL=1800
+WDOG_LAST="$LOCAL/watchdog_last_run"
+WDOG_GAP=-1
+if [[ -f "$WDOG_LAST" ]]; then
+    _prev=$(cat "$WDOG_LAST" 2>/dev/null || echo 0)
+    [[ "$_prev" -gt 0 ]] && WDOG_GAP=$(( NOW - _prev ))
+fi
+echo "$NOW" > "$WDOG_LAST" 2>/dev/null
+MACHINE_SLEPT=0
+if [[ "$WDOG_GAP" -gt 0 ]] && [[ "$WDOG_GAP" -gt $(( WDOG_INTERVAL * 3 / 2 )) ]]; then
+    MACHINE_SLEPT=1
+    log "  [stall] watchdog itself was away ${WDOG_GAP}s - machine slept, no kills this round"
+fi
+
 check_stalled() {
     local module=$1 pattern=$2
     local newest pids age
@@ -114,7 +138,7 @@ check_stalled() {
     pids=$(pgrep -f "$pattern" 2>/dev/null)
     [[ -z "$pids" ]] && return
     age=$(( NOW - $(stat -f %m "$newest" 2>/dev/null || echo "$NOW") ))
-    if [[ $age -ge $STALL_SECONDS ]]; then
+    if [[ $age -ge $STALL_SECONDS ]] && [[ "$MACHINE_SLEPT" -eq 0 ]]; then
         log "  [stall] $module silent ${age}s while running - killing $pids"
         alert "$module hung ${age}s - killed so the next run can start"
         # shellcheck disable=SC2086
@@ -124,6 +148,8 @@ check_stalled() {
         # shellcheck disable=SC2086
         [[ -n "$pids" ]] && kill -9 $pids 2>/dev/null
         rm -f "$LOCAL/${module}.lock" 2>/dev/null
+    elif [[ $age -ge $STALL_SECONDS ]]; then
+        log "  [stall] $module silent ${age}s but the machine slept - leaving it"
     else
         log "  [stall] $module ok, wrote ${age}s ago"
     fi
