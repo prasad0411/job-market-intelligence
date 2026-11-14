@@ -53,12 +53,34 @@ def _get_token():
     return result["access_token"]
 
 # ── folder helpers ─────────────────────────────────────────────────────────────
+def _graph_request(method, url, **kw):
+    """One Graph call with three attempts, or None.
+
+    _get_messages already retried; these two did not, so a single slow
+    response from graph.microsoft.com failed the whole run. 24 of 85 runs
+    in 48 hours died on exactly this, always in _get_folder_id.
+    """
+    kw.setdefault("timeout", 30)
+    for attempt in range(3):
+        try:
+            return getattr(_req, method)(url, **kw)
+        except Exception as e:
+            if attempt == 2:
+                log.warning("Graph %s failed after 3 attempts: %s", method, e)
+                return None
+            time.sleep(5 * (attempt + 1))
+    return None
+
+
 def _get_folder_id(token, name):
-    resp = _req.get(
+    resp = _graph_request(
+        "get",
         f"https://graph.microsoft.com/v1.0/users/{MS_SENDER_EMAIL}/mailFolders",
         headers={"Authorization": f"Bearer {token}"},
-        params={"$top": 50}, timeout=10,
+        params={"$top": 50},
     )
+    if resp is None:
+        return None
     for f in resp.json().get("value", []):
         if f["displayName"].lower() == name.lower():
             return f["id"]
@@ -90,9 +112,10 @@ def _get_messages(token, folder_id, top=50):
     return msgs
 
 def _delete_message(token, msg_id):
-    _req.delete(
+    _graph_request(
+        "delete",
         f"https://graph.microsoft.com/v1.0/users/{MS_SENDER_EMAIL}/messages/{msg_id}",
-        headers={"Authorization": f"Bearer {token}"}, timeout=10,
+        headers={"Authorization": f"Bearer {token}"},
     )
 
 # ── NDR parsing ───────────────────────────────────────────────────────────────
