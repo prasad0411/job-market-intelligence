@@ -222,6 +222,10 @@ _JUNK_TITLE = re.compile(
     r"|your\s+session"
     r"|access\s+denied"
     r"|page\s+not\s+found"
+    # More board landing pages seen on 14 Nov.
+    r"|find\s+your\s+(?:dream\s+)?job"
+    r"|open\s+roles?\b"
+    r"|view\s+all\s+jobs?"
     r")\b", re.I)
 
 _JUNK_DOMAIN = re.compile(
