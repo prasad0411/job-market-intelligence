@@ -68,6 +68,9 @@ _COMPILED_SPONSORSHIP_PATTERNS = [
 ]
 
 _TITLE_CLEAN_PATTERN = re.compile(r"\s*[\(\[].+?[\)\]]|\s*\([^)]*$|\s*\[[^\]]*$")
+_INTERNISH_CLEAN = re.compile(
+    r"\b(intern|interns|internship|internships|co[\s-]*ops?"
+    r"|summer\s+analyst|future\s+talent)\b", re.I)
 _SEASON_PATTERN = re.compile(r",?\s*-?\s*(?:Summer|Fall|Spring|Winter)(?:\s*/\s*(?:Summer|Fall|Spring|Winter))?\s*20\d{2}", re.I)
 _YEAR_PATTERN = re.compile(r"\s*-?\s*20\d{2}\s*-?\s*")
 _DEGREE_PATTERN = re.compile(
@@ -495,8 +498,15 @@ class TitleProcessor:
         import re as _dur_re
         title = _dur_re.sub(r'\s*[-–—]\s*\d+\s*(?:months?|weeks?|mos?)\s*$', '', title, flags=_dur_re.I).strip()
         title = _dur_re.sub(r'\s*\(\d+\s*(?:months?|weeks?|mos?)\)\s*$', '', title, flags=_dur_re.I).strip()
-        # Strip "Fall 2026" / "Summer 2026" season suffixes
-        title = _dur_re.sub(r'\s*[-–—]\s*(?:Fall|Spring|Summer|Winter)\s+20\d{2}\s*$', '', title, flags=_dur_re.I).strip()
+        # Strip "Fall 2026" / "Summer 2026" season suffixes.
+        #
+        # Not for an internship: there the season decides whether the role is
+        # possible at all, and stripping it hid the fact from the term gate.
+        # "Warranty / Process Co - Op - Summer 2027" was cleaned to
+        # "Warranty / Process Co-Op" and kept as if it had no season. For a
+        # full time role the season is only a start date, so it still goes.
+        if not _INTERNISH_CLEAN.search(title):
+            title = _dur_re.sub(r'\s*[-–—]\s*(?:Fall|Spring|Summer|Winter)\s+20\d{2}\s*$', '', title, flags=_dur_re.I).strip()
         # Strip schedule/duration info: "6 Months Full-time - July to Dec", "Full-time - Aug to Dec"
         title = _dur_re.sub(r'\s*[-–—,]\s*\d+\s*(?:months?|weeks?)\s*(?:full[- ]?time|part[- ]?time)?\s*[-–—]?\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*(?:to|through|-|–)\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*(?:\s*20\d{2})?\s*$', '', title, flags=_dur_re.I)
         # Strip "Full-time - July to Dec 2026" without leading number
@@ -532,8 +542,15 @@ class TitleProcessor:
         title = _re_title.sub(r"^[A-Z]\d{3,5}\s+", "", title).strip()
 
         title = _TITLE_CLEAN_PATTERN.sub("", title)
-        title = _SEASON_PATTERN.sub("", title)
-        title = _YEAR_PATTERN.sub(" ", title)
+        # For an internship the season and year decide whether the role is
+        # possible at all, so stripping them hides the fact from the term
+        # gate. "Warranty / Process Co - Op - Summer 2027" was cleaned to
+        # "Warranty / Process Co-Op" and kept as if it named no season.
+        # For a full time role they are only a start date, so they still go.
+        _keep_season = bool(_INTERNISH_CLEAN.search(title))
+        if not _keep_season:
+            title = _SEASON_PATTERN.sub("", title)
+            title = _YEAR_PATTERN.sub(" ", title)
         title = _DEGREE_PATTERN.sub("", title)
         title = re.sub(r"\s+", " ", title).strip().strip("-")
 
