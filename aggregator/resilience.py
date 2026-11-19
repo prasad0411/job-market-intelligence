@@ -43,13 +43,18 @@ DEFAULT_SOCKET_TIMEOUT = 45.0
 # Stack dump if the heartbeat has not advanced in this long.
 WATCHDOG_STALL_SECONDS = 600
 
+# Active-time budget for this process, set from JOB_ACTIVE_DEADLINE by the
+# cron runner. None means no in-process ceiling.
+ACTIVE_DEADLINE = [None]
+_mono_start = [0.0]
+
 _last_beat = [time.time()]
 _installed = [False]
 
 
 def beat():
     """Call from long loops to say progress is still happening."""
-    _last_beat[0] = time.time()
+    _last_beat[0] = time.monotonic()
 
 
 def _install_socket_timeout():
@@ -112,7 +117,7 @@ def _install_watchdog():
         warned = False
         while True:
             time.sleep(30)
-            stalled = time.time() - _last_beat[0]
+            stalled = time.monotonic() - _last_beat[0]
             if stalled > WATCHDOG_STALL_SECONDS and not warned:
                 logging.error(
                     "WATCHDOG: no progress for %.0fs - dumping stacks", stalled)
@@ -121,12 +126,31 @@ def _install_watchdog():
             elif stalled <= WATCHDOG_STALL_SECONDS:
                 warned = False
 
+            # The real ceiling, measured in ACTIVE time. The external
+            # `timeout` wrapper counts suspend, so on 16 Nov a run with
+            # 475s of active work was killed at 12,869s of wall clock.
+            # The process knows its own clock; the wrapper does not.
+            if ACTIVE_DEADLINE[0]:
+                active = time.monotonic() - _mono_start[0]
+                if active >= ACTIVE_DEADLINE[0]:
+                    logging.error(
+                        "DEADLINE: %.0fs of active work exceeds the %ds "
+                        "budget - stopping", active, ACTIVE_DEADLINE[0])
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return
+
     t = threading.Thread(target=_watch, name="watchdog", daemon=True)
     t.start()
     return t
 
 
 def install(watchdog=True, reaper=True):
+    _mono_start[0] = time.monotonic()
+    try:
+        _d = int(os.environ.get("JOB_ACTIVE_DEADLINE", "0") or 0)
+        ACTIVE_DEADLINE[0] = _d if _d > 0 else None
+    except Exception:
+        ACTIVE_DEADLINE[0] = None
     """Idempotent. Safe to call from several entry points."""
     if _installed[0]:
         return {}

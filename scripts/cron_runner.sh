@@ -86,6 +86,20 @@ case "$MODULE" in
     *)                          MODULE_TIMEOUT=1800  ;;
 esac
 
+# The real ceiling is enforced INSIDE the process, in active time.
+#
+# `timeout` counts suspend, and this laptop suspends constantly: on 16 Nov
+# an aggregator run with 475s of actual work was killed at 12,869s of wall
+# clock, having slept 12,394s of it. 12 healthy runs died that way in two
+# days, and every kill made the watchdog re-run the job.
+#
+# resilience.install() reads JOB_ACTIVE_DEADLINE and stops the process when
+# its own monotonic clock passes the budget, which does not advance during
+# sleep. The wrapper below stays as a backstop at 4x, for the case the
+# process is so wedged it cannot run its own watchdog thread.
+export JOB_ACTIVE_DEADLINE="$MODULE_TIMEOUT"
+WALL_BACKSTOP=$(( MODULE_TIMEOUT * 4 ))
+
 TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
 if [[ -z "$TIMEOUT_BIN" ]]; then
     echo "WARNING: no timeout binary found, running unbounded" >> "$LOG_FILE"
@@ -96,10 +110,10 @@ if [[ -z "$TIMEOUT_BIN" ]]; then
     fi
 else
     if [[ "$MODULE" == scripts/* ]]; then
-        "$TIMEOUT_BIN" --kill-after=60 "$MODULE_TIMEOUT" \
+        "$TIMEOUT_BIN" --kill-after=60 "$WALL_BACKSTOP" \
             python3 "${MODULE}.py" >> "$LOG_FILE" 2>&1
     else
-        "$TIMEOUT_BIN" --kill-after=60 "$MODULE_TIMEOUT" \
+        "$TIMEOUT_BIN" --kill-after=60 "$WALL_BACKSTOP" \
             python3 -m "$MODULE" >> "$LOG_FILE" 2>&1
     fi
 fi
