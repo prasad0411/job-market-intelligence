@@ -138,7 +138,30 @@ check_stalled() {
     pids=$(pgrep -f "$pattern" 2>/dev/null)
     [[ -z "$pids" ]] && return
     age=$(( NOW - $(stat -f %m "$newest" 2>/dev/null || echo "$NOW") ))
-    if [[ $age -ge $STALL_SECONDS ]] && [[ "$MACHINE_SLEPT" -eq 0 ]]; then
+    # Two clean observations in a row before a kill. One round of grace was
+    # not enough: after a wake the log is still hours old because that
+    # silence happened during sleep, so the next round killed anyway. Any
+    # sleep resets the count, so a kill needs sustained silence while the
+    # machine was demonstrably awake.
+    STRIKE_FILE="$LOCAL/stall_strikes_${module}"
+    if [[ "$MACHINE_SLEPT" -eq 1 ]]; then
+        rm -f "$STRIKE_FILE" 2>/dev/null
+        log "  [stall] $module silent ${age}s but the machine slept - counter reset"
+        return
+    fi
+    if [[ $age -lt $STALL_SECONDS ]]; then
+        rm -f "$STRIKE_FILE" 2>/dev/null
+        log "  [stall] $module ok, wrote ${age}s ago"
+        return
+    fi
+    STRIKES=$(( $(cat "$STRIKE_FILE" 2>/dev/null || echo 0) + 1 ))
+    echo "$STRIKES" > "$STRIKE_FILE" 2>/dev/null
+    if [[ "$STRIKES" -lt 2 ]]; then
+        log "  [stall] $module silent ${age}s - strike $STRIKES of 2, watching"
+        return
+    fi
+    rm -f "$STRIKE_FILE" 2>/dev/null
+    if true; then
         log "  [stall] $module silent ${age}s while running - killing $pids"
         alert "$module hung ${age}s - killed so the next run can start"
         # shellcheck disable=SC2086
