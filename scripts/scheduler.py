@@ -242,18 +242,39 @@ def run_job_async(job, state):
 
 
 def should_run_timed(job, state, now):
+    """Run on time, or catch up on a slot that was missed.
+
+    The old rule was a 3 minute window around the scheduled minute, which
+    assumes the machine is awake at that minute. This laptop suspends
+    constantly, so a slot was simply skipped for the day: cleanup is set
+    for 07:30 and last ran on 18 Nov at 12:22. Six timed jobs, including
+    the aggregator, silently lost runs this way. max_gap was declared for
+    exactly this and never used here.
+
+    Now: take the most recent slot that has already passed, and run if we
+    have not run since it. One catch up, not one per missed slot, and
+    max_gap bounds how stale a slot may be before it is not worth it.
+    """
     name = job["name"]
     last_run_str = state.get(name)
-    for (h, m) in job["times"]:
-        scheduled = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if abs((now - scheduled).total_seconds()) > 180:  # 3-min window
-            continue
-        if last_run_str:
-            last_run = datetime.datetime.fromisoformat(last_run_str)
-            if (now - last_run).total_seconds() < 600:
-                return False
+    last_run = (datetime.datetime.fromisoformat(last_run_str)
+                if last_run_str else None)
+    max_gap = job.get("max_gap", 30 * 3600)
+
+    slots = []
+    for day in (now.date(), now.date() - datetime.timedelta(days=1)):
+        for (h, m) in job["times"]:
+            slots.append(datetime.datetime.combine(day, datetime.time(h, m)))
+    slots = sorted([s for s in slots if s <= now], reverse=True)
+    if not slots:
+        return False
+
+    recent = slots[0]
+    if (now - recent).total_seconds() > max_gap:
+        return False                      # too stale to be worth catching up
+    if last_run is None:
         return True
-    return False
+    return last_run < recent
 
 def _resolve_interval_seconds(job):
     """Self-healing: accept interval (seconds), interval_hours, or interval_minutes.
