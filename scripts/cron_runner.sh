@@ -100,22 +100,28 @@ esac
 export JOB_ACTIVE_DEADLINE="$MODULE_TIMEOUT"
 WALL_BACKSTOP=$(( MODULE_TIMEOUT * 4 ))
 
+# Resolve how to run this job once, rather than assuming .py in four
+# places. selfcheck is a shell script and both branches ran
+# "python3 scripts/selfcheck.py", which does not exist: it exited 2 every
+# time and had not actually run since it was written.
+if [[ "$MODULE" == scripts/* ]] && [[ -f "${MODULE}.sh" ]]; then
+    RUN_CMD=(bash "${MODULE}.sh")
+elif [[ "$MODULE" == scripts/* ]] && [[ -f "${MODULE}.py" ]]; then
+    RUN_CMD=(python3 "${MODULE}.py")
+elif [[ "$MODULE" == scripts/* ]]; then
+    echo "ERROR: no ${MODULE}.py or ${MODULE}.sh found" >> "$LOG_FILE"
+    exit 2
+else
+    RUN_CMD=(python3 -m "$MODULE")
+fi
+
 TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
 if [[ -z "$TIMEOUT_BIN" ]]; then
     echo "WARNING: no timeout binary found, running unbounded" >> "$LOG_FILE"
-    if [[ "$MODULE" == scripts/* ]]; then
-        python3 "${MODULE}.py" >> "$LOG_FILE" 2>&1
-    else
-        python3 -m "$MODULE" >> "$LOG_FILE" 2>&1
-    fi
+    "${RUN_CMD[@]}" >> "$LOG_FILE" 2>&1
 else
-    if [[ "$MODULE" == scripts/* ]]; then
-        "$TIMEOUT_BIN" --kill-after=60 "$WALL_BACKSTOP" \
-            python3 "${MODULE}.py" >> "$LOG_FILE" 2>&1
-    else
-        "$TIMEOUT_BIN" --kill-after=60 "$WALL_BACKSTOP" \
-            python3 -m "$MODULE" >> "$LOG_FILE" 2>&1
-    fi
+    "$TIMEOUT_BIN" --kill-after=60 "$WALL_BACKSTOP" \
+        "${RUN_CMD[@]}" >> "$LOG_FILE" 2>&1
 fi
 EXIT_CODE=$?
 if [[ "$EXIT_CODE" -eq 124 || "$EXIT_CODE" -eq 137 ]]; then
